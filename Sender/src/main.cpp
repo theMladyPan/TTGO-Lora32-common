@@ -2,112 +2,166 @@
 #include <LoRa.h>
 #include <Wire.h>  
 #include "SSD1306.h"
-#include "protocol.h"
-#include "msgid.h"
-#include "devids.h"
 
 #include <iostream>
 #include <stdio.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
-#define ECHO_TEST_TXD  (GPIO_NUM_32)
-#define ECHO_TEST_RXD  (GPIO_NUM_33)
-#define ECHO_TEST_RTS  (UART_PIN_NO_CHANGE)
-#define ECHO_TEST_CTS  (UART_PIN_NO_CHANGE)
 
-#define BUF_SIZE (1024)
-
-#define SCK     5    // GPIO5  -- SX1278's SCK
-#define MISO    19   // GPIO19 -- SX1278's MISO
-#define MOSI    27   // GPIO27 -- SX1278's MOSI
-#define SS      18   // GPIO18 -- SX1278's CS
-#define RST     14   // GPIO14 -- SX1278's RESET
-#define DI0     26   // GPIO26 -- SX1278's IRQ(Interrupt Request)
 #define BAND    868E6
 
+
 unsigned int counter = 0;
+static uint32_t tStart = 0;
 
 SSD1306 display(0x3c, 4, 15);
 
-void ledOff()
+static String rcvdMsg("");
+static bool rcvd = 0;
+
+
+void message(String text, uint x=0, uint y=0, bool clear=false)
 {
-    Serial.print("sent");
+    if(clear)
+    {
+        display.clear();
+    }
+    display.setTextAlignment(TEXT_ALIGN_LEFT);
+    display.setFont(ArialMT_Plain_16);
+
+    display.drawString(x, y, text);
+    display.display();
 }
 
+void LoRa_rxMode(){
+    LoRa.disableInvertIQ();               // normal mode
+    LoRa.receive();                       // set receive mode
+}
+
+void LoRa_txMode(){
+    LoRa.idle();                          // set standby mode
+    LoRa.enableInvertIQ();                // active invert I and Q signals
+}
+
+void LoRa_sendMessage(String message) {
+    LoRa_txMode();                        // set tx mode
+    LoRa.beginPacket();                   // start packet
+    LoRa.print(message);                  // add payload
+    LoRa.endPacket(true);                 // finish packet and send it
+}
+
+void onReceive(int packetSize) {
+    digitalWrite(LED_BUILTIN, HIGH);
+    rcvdMsg = "";
+    while (LoRa.available()) {
+        rcvdMsg += (char)LoRa.read();
+    }
+    rcvd = 1;
+    digitalWrite(LED_BUILTIN, LOW);
+}
+
+void onTxDone() {
+    digitalWrite(LED_BUILTIN, LOW);    // turn the LED off by making the voltage LOW
+    LoRa_rxMode();   
+    //LoRa.idle(); 
+}
 
 void setup() {
-    pinMode(16,OUTPUT);
-    pinMode(2,OUTPUT);
+    setCpuFrequencyMhz(160); // set CPU core to 240MHz
     
-    digitalWrite(16, LOW);    // set GPIO16 low to reset OLED
+    pinMode(OLED_RST,OUTPUT);
+    pinMode(LED_BUILTIN,OUTPUT);
+    
+    digitalWrite(OLED_RST, LOW);    // set GPIO16 low to reset OLED
     delay(50); 
-    digitalWrite(16, HIGH); // while OLED is running, must set GPIO16 in high
+    digitalWrite(OLED_RST, HIGH); // while OLED is running, must set GPIO16 in high
     
     Serial.begin(115200);
     Serial.setTimeout(300);
+    
+    display.init();
+    display.flipScreenVertically();  
+    display.setFont(ArialMT_Plain_10);
+    display.drawString(0, 0, "Device started");
 
     // begin(unsigned long baud, uint32_t config=SERIAL_8N1, int8_t rxPin=-1, int8_t txPin=-1, bool invert=false, unsigned long timeout_ms = 20000UL);
     //Serial1.begin(115200, SERIAL_8N1, 33, 32, false, 20);
     while (!Serial);
     Serial.println("LoRa Sender Test");
     
-    SPI.begin(SCK,MISO,MOSI,SS);
-    LoRa.setPins(SS,RST,DI0);
-    if (!LoRa.begin(868E6)) {
+    SPI.begin(LORA_SCK,LORA_MISO,LORA_MOSI,LORA_CS);
+    LoRa.setPins(LORA_CS,LORA_RST,LORA_IRQ);
+
+    if (!LoRa.begin(BAND))
+    {
         Serial.println("Starting LoRa failed!");
         while (1);
     }
-    LoRa.onTxDone(ledOff);
-    //LoRa.setTxPower();
+
+    LoRa.setSpreadingFactor(7); // spreading factor SF7
+    LoRa.setSignalBandwidth(125e3); // frequency bandwidth 125kHz
+    LoRa.setCodingRate4(5); // coding factor 4:5
+
+    LoRa.setTxPower(20);
     LoRa.enableCrc();
-  //LoRa.onReceive(cbk);
-//  LoRa.receive();
+    
+    LoRa.onReceive(onReceive);
+    LoRa.onTxDone(onTxDone);
+    LoRa_rxMode();
+
+    gpio_wakeup_enable(static_cast<gpio_num_t>(LORA_IRQ), GPIO_INTR_HIGH_LEVEL); 
+    esp_sleep_enable_timer_wakeup(5e6); // sleep for 1s max
+    esp_sleep_enable_gpio_wakeup();
+    
     Serial.println("init ok");
-    display.init();
-    display.flipScreenVertically();  
-    display.setFont(ArialMT_Plain_10);
-    display.drawString(0, 0, "Device started");
-
-    setCpuFrequencyMhz(80); // set CPU core to 240MHz
-
-    //bootloader_random_enable();
 }
 
 
 void loop() {
-    delay(1000);
-    char buf[10];
-    esp_fill_random(&buf, sizeof(buf));
-    auto rcvd = String(buf);
-    rcvd = String(counter++);
+
+    display.displayOn();
+
+    //char buf[64];
+    //esp_fill_random(&buf, sizeof(buf));
+    auto rcvd = String(counter++) + " - " + String(millis());
     if(Serial.available())
     {
         rcvd = String(Serial.readString());
     }
 
-    display.clear();
-    display.setTextAlignment(TEXT_ALIGN_LEFT);
-    display.setFont(ArialMT_Plain_10);
-
-    display.drawString(0, 0, "Sending packet: ");
-    display.drawString(0, 20, String(rcvd));
-    display.display();
+    message(String("Sending packet: "), 0, 0, true);
+    message(String(rcvd), 0, 16, false); 
 
     // send packet
-    uint32_t tStart = millis();
-    digitalWrite(2, HIGH);   // turn the LED on (HIGH is the voltage level)
+    tStart = millis();
+    digitalWrite(LED_BUILTIN, HIGH);   // turn the LED on (HIGH is the voltage level)
     LoRa.beginPacket();
-    LoRa.print(rcvd);
-    LoRa.endPacket();
-    digitalWrite(2, LOW);    // turn the LED off by making the voltage LOW
+    for(auto c:rcvd)
+    {
+        LoRa.write(c);
+    }
+    //LoRa.print(rcvd);
+    LoRa.endPacket(true);
     
-    Serial.print(rcvd);
-    Serial.print(" - sent in ");
-    Serial.print(String(millis()-tStart));
-    Serial.print("ms\n");
+    Serial.print(rcvd+", len: "+String(rcvd.length()));
+
+    esp_light_sleep_start();
+
+    //after wake up from txDone evt:
+    Serial.print(", sent in "+String(millis()-tStart)+"ms\n");
+    message("Done!", 0, 32, false); 
+    delay(200);
+
+    if(rcvd)
+    {
+        rcvd = 0;
+        Serial.println("Received: " + rcvdMsg);
+        message("RSSI: "+String(rcvdMsg), 0, 48, false);
+    }
+    delay(500);
+    display.displayOff();
+    esp_light_sleep_start(); // sleep for another second
+
     
-    delay(2000);
     //esp_deep_sleep(3e6);
 }
