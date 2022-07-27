@@ -24,7 +24,7 @@ void onRxInt(int packSize)
     rcvd = packSize;
 }
 
-int receive(int packetSize) {
+String receive(int packetSize) {
     String packet("");
     int rssi = LoRa.packetRssi();
     packSize = String(packetSize,DEC);
@@ -42,7 +42,7 @@ int receive(int packetSize) {
     display.display();
     Serial.println(packet);
 
-    return rssi;
+    return String(rssi) + ":" + packet;
 }
 
   void setup() {
@@ -64,7 +64,7 @@ int receive(int packetSize) {
     LoRa.onReceive(onRxInt);
     LoRa.disableInvertIQ(); 
     LoRa.receive();    
-    LoRa.setSpreadingFactor(7); // spreading factor SF7
+    LoRa.setSpreadingFactor(12); // spreading factor SF7
     LoRa.setSignalBandwidth(125e3); // frequency bandwidth 125kHz
     LoRa.setCodingRate4(5); // coding factor 4:5
 
@@ -94,9 +94,7 @@ void loop() {
     //if (packetSize) { cbk(packetSize);  }
     if(rcvd)
     {
-        int rssi = receive(rcvd);
-        rcvd = 0;
-
+        String rssi = receive(rcvd);
         // echo back:
         digitalWrite(LED_BUILTIN, HIGH);
         LoRa.idle();
@@ -105,6 +103,9 @@ void loop() {
         LoRa.endPacket();
         LoRa.receive();
         digitalWrite(LED_BUILTIN, LOW);
+
+        rcvd = 0;
+
     }
     sleep_ms(10);
 }
