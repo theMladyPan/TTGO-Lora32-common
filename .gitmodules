@@ -1,0 +1,3 @@
+[submodule "TTGO-LoRa32-V1.0-TTN-OTAA"]
+	path = TTGO-LoRa32-V1.0-TTN-OTAA
+	url = git@github.com:squix78/TTGO-LoRa32-V1.0-TTN-OTAA.git
