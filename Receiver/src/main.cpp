@@ -94,17 +94,8 @@ void loop() {
     //if (packetSize) { cbk(packetSize);  }
     if(rcvd)
     {
-        int rssi = receive(rcvd);
+        receive(rcvd);
         rcvd = 0;
-
-        // echo back:
-        digitalWrite(LED_BUILTIN, HIGH);
-        LoRa.idle();
-        LoRa.beginPacket();
-        LoRa.print(String(rssi));
-        LoRa.endPacket();
-        LoRa.receive();
-        digitalWrite(LED_BUILTIN, LOW);
     }
     sleep_ms(10);
 }
