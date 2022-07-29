@@ -30,6 +30,8 @@
 #include <RHMesh.h>
 #include <RH_RF95.h>
 
+#include "SSD1306.h"
+
 #define RH_MESH_MAX_MESSAGE_LEN 50
 
 //Function Definitions
@@ -59,6 +61,21 @@ void sig_handler(int sig);
 #define RFM95_FREQUENCY  868.00
 #define RFM95_TXPOWER 14
 
+SSD1306 display(0x3c, 4, 15);
+
+
+void message(String text, uint x=0, uint y=0, bool clear=false)
+{
+    if(clear)
+    {
+        display.clear();
+    }
+    display.setTextAlignment(TEXT_ALIGN_LEFT);
+    display.setFont(ArialMT_Plain_10);
+
+    display.drawString(x, y, text);
+    display.display();
+}
 
 // Singleton instance of the radio driver
 RH_RF95 rf95(RFM95_CS_PIN, RFM95_IRQ_PIN);
@@ -72,17 +89,30 @@ int flag = 0;
 void setup()
 {
     Serial.begin(115200);
-    Serial.println("Starting...");
+
+    pinMode(OLED_RST,OUTPUT);
+    digitalWrite(OLED_RST, LOW);    // set GPIO16 low to reset OLED
+    delay(50); 
+    digitalWrite(OLED_RST, HIGH); // while OLED is running, must set GPIO16 in 
+    printf("Display Init...\n\n");
+
+    display.init();
+    display.flipScreenVertically();  
+    message("Mesh Server OK");
+    message("Addr: ", 0, 12);
+    message(String(SERVER1_ADDRESS), 60, 12);
 }
-int main(int argc, const char* argv[]);
+
+int main();
 
 void loop()
 {
-    main(NULL, NULL);
+    main();
+    ESP.restart();
 }
 
 //Main Function
-int main (int argc, const char* argv[] )
+int main ()
 {
 
   gpio_set_direction(LED_PIN_NUM, GPIO_MODE_OUTPUT);
@@ -123,6 +153,8 @@ int main (int argc, const char* argv[] )
     {
       gpio_set_level(LED_PIN_NUM, HIGH);
       Serial.print("got request from : 0x");
+      message(String("Req from: "), 0, 24);
+      message(String(from) + "; " + String((char *)buf));
       Serial.print(from, HEX);
       Serial.print(": ");
       Serial.println((char*)buf);

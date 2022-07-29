@@ -83,6 +83,7 @@ void setup() {
     display.flipScreenVertically();  
     display.setFont(ArialMT_Plain_10);
     display.drawString(0, 0, "Device started");
+    display.display();
 
     // begin(unsigned long baud, uint32_t config=SERIAL_8N1, int8_t rxPin=-1, int8_t txPin=-1, bool invert=false, unsigned long timeout_ms = 20000UL);
     //Serial1.begin(115200, SERIAL_8N1, 33, 32, false, 20);
