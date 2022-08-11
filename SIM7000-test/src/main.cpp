@@ -1,15 +1,26 @@
 /*
 Battery test T-SIM7000 & Thingsboard
- */
+*/
 
 #define TINY_GSM_MODEM_SIM7000
 
 #define TINY_GSM_RX_BUFFER 1024 // Set RX buffer to 1Kb
-#define DUMP_AT_COMMANDS
+#undef DUMP_AT_COMMANDS
 
 #include "TinyGsmClient.h"
-// #include "ThingsBoard.h"
 #include <ArduinoHttpClient.h>
+#include <AESLib.h>
+#include <xbase64.h>
+#include <ArduinoJson.h>
+#include "BigInt.h"
+
+extern "C" {
+#include "bootloader_random.h"
+}
+
+
+AESLib aesLib;
+
 
 #define uS_TO_S_FACTOR 1000000 /* Conversion factor for micro seconds to seconds */
 #define TIME_TO_SLEEP 60       /* ESP32 should sleep more seconds  (note SIM7000 needs ~20sec to turn off if sleep is activated) */
@@ -20,14 +31,9 @@ HardwareSerial serialGsm(1);
 #define TINY_GSM_USE_GPRS true
 #define TINY_GSM_USE_WIFI false
 
-// cosmote
+// O2 duh
 const char apn[] = "o2internet";
 const char nbiot_apn[] = "iot";
-
-// 1nce
-// const char apn[] = "iot.1nce.net";
-// const char nbiot_apn[] = "iot.1nce.net";
-
 #define isNBIOT false
 
 const char user[] = "";
@@ -44,13 +50,18 @@ const char pass[] = "";
 #define I2C_SDA 21
 #define I2C_SCL 22
 
+#define LED_PIN 12
+
+#define UNUSED_PINS
+
+
 #define PIN_ADC_BAT 35
 #define PIN_ADC_SOLAR 36
 #define ADC_BATTERY_LEVEL_SAMPLES 100
 
 // define preffered connection mode
 // 2 Auto // 13 GSM only // 38 LTE only
-#define CONNECTION_MODE 2
+#define CONNECTION_MODE 2  // Auto
 
 #ifdef DUMP_AT_COMMANDS
 #include "StreamDebugger.h"
@@ -60,23 +71,24 @@ TinyGsm modem(debugger);
 TinyGsm modem(serialGsm);
 #endif
 
-#define TOKEN "xxxxxxxxxxxxxxxxxxxx"     // thingsboard token
-#define THINGSBOARD_SERVER "192.168.1.1" //thingsboard server
-
 // Baud rate for debug serial
 #define SERIAL_DEBUG_BAUD 115200
 
 // Initialize GSM client
 TinyGsmClient client(modem);
 
-// Initialize ThingsBoard instance
-// ThingsBoard tb(client);
+#define DEVID 66666
+
+
+using namespace std;
 
 
 // Server details
-const char server[]   = "themladypan.pythonanywhere.com"; //"http://themladypan.pythonanywhere.com";
-const char resource[] = "/xerxes";
-const int  port       = 80;
+const char server[]   = "65.19.191.151";
+const char url_resource[] = "/xerxes";
+const char url_handshake[] = "/handshake/";
+String url_register = "/register/" + String(DEVID) + "/"; 
+const int  port       = 8000;
 HttpClient http(client, server, port);
 
 // Set to true, if modem is connected
@@ -90,340 +102,353 @@ void modem_off();
 
 void print_wakeup_reason()
 {
-  esp_sleep_wakeup_cause_t wakeup_reason;
+    esp_sleep_wakeup_cause_t wakeup_reason;
 
-  wakeup_reason = esp_sleep_get_wakeup_cause();
+    wakeup_reason = esp_sleep_get_wakeup_cause();
 
-  switch (wakeup_reason)
-  {
-  case ESP_SLEEP_WAKEUP_EXT0:
-    Serial.println("Wakeup caused by external signal using RTC_IO");
-    break;
-  case ESP_SLEEP_WAKEUP_EXT1:
-    Serial.println("Wakeup caused by external signal using RTC_CNTL");
-    break;
-  case ESP_SLEEP_WAKEUP_TIMER:
-    Serial.println("Wakeup caused by timer");
-    break;
-  case ESP_SLEEP_WAKEUP_TOUCHPAD:
-    Serial.println("Wakeup caused by touchpad");
-    break;
-  case ESP_SLEEP_WAKEUP_ULP:
-    Serial.println("Wakeup caused by ULP program");
-    break;
-  default:
-    Serial.printf("Wakeup was not caused by deep sleep: %d\n", wakeup_reason);
-    break;
-  }
+    switch (wakeup_reason)
+    {
+    case ESP_SLEEP_WAKEUP_EXT0:
+        Serial.println("Wakeup caused by external signal using RTC_IO");
+        break;
+    case ESP_SLEEP_WAKEUP_EXT1:
+        Serial.println("Wakeup caused by external signal using RTC_CNTL");
+        break;
+    case ESP_SLEEP_WAKEUP_TIMER:
+        Serial.println("Wakeup caused by timer");
+        break;
+    case ESP_SLEEP_WAKEUP_TOUCHPAD:
+        Serial.println("Wakeup caused by touchpad");
+        break;
+    case ESP_SLEEP_WAKEUP_ULP:
+        Serial.println("Wakeup caused by ULP program");
+        break;
+    default:
+        Serial.printf("Wakeup was not caused by deep sleep: %d\n", wakeup_reason);
+        break;
+    }
 }
 
 void modem_reset()
 {
-  Serial.println("Modem hardware reset");
-  pinMode(MODEM_RST, OUTPUT);
-  digitalWrite(MODEM_RST, LOW);
-  delay(260); //Treset 252ms
-  digitalWrite(MODEM_RST, HIGH);
-  delay(4000); //Modem takes longer to get ready and reply after this kind of reset vs power on
+    Serial.println("Modem hardware reset");
+    pinMode(MODEM_RST, OUTPUT);
+    digitalWrite(MODEM_RST, LOW);
+    delay(260); //Treset 252ms
+    digitalWrite(MODEM_RST, HIGH);
+    delay(4000); //Modem takes longer to get ready and reply after this kind of reset vs power on
 
-  //modem.factoryDefault();
-  //modem.restart(); //this results in +CGREG: 0,0
+    //modem.factoryDefault();
+    //modem.restart(); //this results in +CGREG: 0,0
 }
 
 void modem_on()
 {
-  // Set-up modem  power pin
-  pinMode(MODEM_PWKEY, OUTPUT);
-  digitalWrite(MODEM_PWKEY, HIGH);
-  delay(10);
-  digitalWrite(MODEM_PWKEY, LOW);
-  delay(1010); //Ton 1sec
-  digitalWrite(MODEM_PWKEY, HIGH);
+    // Set-up modem  power pin
+    pinMode(MODEM_PWKEY, OUTPUT);
+    digitalWrite(MODEM_PWKEY, HIGH);
+    delay(10);
+    digitalWrite(MODEM_PWKEY, LOW);
+    delay(1010); //Ton 1sec
+    digitalWrite(MODEM_PWKEY, HIGH);
 
-  //wait_till_ready();
-  Serial.println("Waiting till modem ready...");
-  delay(4510); //Ton uart 4.5sec but seems to need ~7sec after hard (button) reset
-               //On soft-reset serial replies immediately.
+    //wait_till_ready();
+    Serial.println("Waiting till modem ready...");
+    delay(4510); //Ton uart 4.5sec but seems to need ~7sec after hard (button) reset
+                //On soft-reset serial replies immediately.
 }
 
 void modem_off()
 {
-  //if you turn modem off while activating the fancy sleep modes it takes ~20sec, else its immediate
-  Serial.println("Going to sleep now with modem turned off");
-  //modem.gprsDisconnect();
-  //modem.radioOff();
-  modem.sleepEnable(false); // required in case sleep was activated and will apply after reboot
-  modem.poweroff();
+    //if you turn modem off while activating the fancy sleep modes it takes ~20sec, else its immediate
+    Serial.println("Going to sleep now with modem turned off");
+    //modem.gprsDisconnect();
+    //modem.radioOff();
+    modem.sleepEnable(false); // required in case sleep was activated and will apply after reboot
+    modem.poweroff();
 }
 
 // fancy low power mode - while connected
 void modem_sleep() // will have an effect after reboot and will replace normal power down
 {
-  Serial.println("Going to sleep now with modem in power save mode");
-  // needs reboot to activa and takes ~20sec to sleep
-  modem.PSM_mode();    //if network supports will enter a low power sleep PCM (9uA)
-  modem.eDRX_mode14(); // https://github.com/botletics/SIM7000-LTE-Shield/wiki/Current-Consumption#e-drx-mode
-  modem.sleepEnable(); //will sleep (1.7mA), needs DTR or PWRKEY to wake
-  pinMode(MODEM_DTR, OUTPUT);
-  digitalWrite(MODEM_DTR, HIGH);
+    Serial.println("Going to sleep now with modem in power save mode");
+    // needs reboot to activa and takes ~20sec to sleep
+    modem.PSM_mode();    //if network supports will enter a low power sleep PCM (9uA)
+    modem.eDRX_mode14(); // https://github.com/botletics/SIM7000-LTE-Shield/wiki/Current-Consumption#e-drx-mode
+    modem.sleepEnable(); //will sleep (1.7mA), needs DTR or PWRKEY to wake
+    pinMode(MODEM_DTR, OUTPUT);
+    digitalWrite(MODEM_DTR, HIGH);
 }
 
 void modem_wake()
 {
-  Serial.println("Wake up modem from sleep");
-  // DTR low to wake serial
-  pinMode(MODEM_DTR, OUTPUT);
-  digitalWrite(MODEM_DTR, LOW);
-  delay(50);
-  //wait_till_ready();
+    Serial.println("Wake up modem from sleep");
+    // DTR low to wake serial
+    pinMode(MODEM_DTR, OUTPUT);
+    digitalWrite(MODEM_DTR, LOW);
+    delay(50);
+    //wait_till_ready();
 }
 
 void shutdown()
 {
+    //modem_sleep();
+    modem_off();
 
-  //modem_sleep();
-  modem_off();
-
-  delay(1000);
-  Serial.flush();
-  esp_deep_sleep_start();
-  Serial.println("Going to sleep now");
-  delay(1000);
-  Serial.flush();
-  esp_deep_sleep_start();
+    delay(100);
+    Serial.flush();
+    esp_deep_sleep_start();
+    Serial.println("Going to sleep now");
+    delay(100);
+    Serial.flush();
+    esp_deep_sleep_start();
 }
 
 void wait_till_ready() // NOT WORKING - Attempt to minimize waiting time
 {
-
-  for (int8_t i = 0; i < 100; i++) //timeout 100 x 100ms = 10sec
-  {
-    if (modem.testAT())
+    for (int8_t i = 0; i < 100; i++) //timeout 100 x 100ms = 10sec
     {
-      //Serial.println("Wait time:%F sec\n", i/10));
-      Serial.printf("Wait time: %d\n", i);
-      break;
+        if (modem.testAT())
+        {
+        //Serial.println("Wait time:%F sec\n", i/10));
+        Serial.printf("Wait time: %d\n", i);
+        break;
+        }
+        delay(100);
     }
-    delay(100);
-  }
+}
+
+void getAesKey(byte *aes_key)
+{
+    bootloader_random_enable();
+    esp_fill_random(aes_key, 16);
+    bootloader_random_disable();
+}
+
+// Generate IV (once)
+void aes_init() {
+    aesLib.set_paddingmode((paddingMode)0);
+}
+
+unsigned char ciphertext[2*16] = {0}; // THIS IS OUTPUT BUFFER (FOR BASE64-ENCODED ENCRYPTED DATA)
+
+/*
+uint16_t encrypt_to_ciphertext(char * msg, uint16_t msgLen, byte iv[]) {
+    byte aes_iv[16] = {0};
+    aesLib.gen_iv(aes_iv);
+
+    Serial.println("Calling encrypt (string)...");
+    // aesLib.get_cipher64_length(msgLen);
+    int cipherlength = aesLib.encrypt((byte*)msg, msgLen, (char*)ciphertext, aes_key, sizeof(aes_key), iv);
+                    // uint16_t encrypt(byte input[], uint16_t input_length, char * output, byte key[],int bits, byte my_iv[]);
+    return cipherlength;
+}
+*/
+
+void testJson(){
 }
 
 void setup()
 {
-  // Set console baud rate
-  Serial.begin(SERIAL_DEBUG_BAUD);
-  delay(10);
-  Serial.println(F("Started"));
+    // Set console baud rate
+    Serial.begin(SERIAL_DEBUG_BAUD);
+    delay(10);
+    Serial.println(F("Started"));
+    delay(3000);
+    testJson();
 
-  pinMode(PIN_ADC_BAT, INPUT);
-  pinMode(PIN_ADC_SOLAR, INPUT);
+    /*
+    pinMode(PIN_ADC_BAT, ANALOG);
+    pinMode(PIN_ADC_SOLAR, ANALOG);
 
-  uint16_t v_bat = 0;
-  uint16_t v_solar = 0;
+    uint16_t v_bat = 0;
+    uint16_t v_solar = 0;
 
-  // while (1)
-  // {
-  read_adc_bat(&v_bat);
-  Serial.print("BAT: ");
-  Serial.print(v_bat);
+    while (1)
+    {
+    read_adc_bat(&v_bat);
+    Serial.print("BAT: ");
+    Serial.print(v_bat);
 
-  read_adc_solar(&v_solar);
-  Serial.print(" SOLAR: ");
-  Serial.println(v_solar);
+    read_adc_solar(&v_solar);
+    Serial.print(" SOLAR: ");
+    Serial.println(v_solar);
 
-  //   delay(1000);
-  // }
+    delay(1000);
+    }*/
 
-  //Increment boot number and print it every reboot
-  ++bootCount;
-  Serial.println("Boot number: " + String(bootCount));
+    //Increment boot number and print it every reboot
+    ++bootCount;
+    Serial.println("Boot number: " + String(bootCount));
 
-  //Print the wakeup reason for ESP32
-  print_wakeup_reason();
+    //Print the wakeup reason for ESP32
+    print_wakeup_reason();
 
-  /*
-  First we configure the wake up source
-  We set our ESP32 to wake up every 5 seconds
-  */
-  esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
-  Serial.println("Setup ESP32 to sleep for every " + String(TIME_TO_SLEEP) +
-                 " Seconds");
+    /*
+    First we configure the wake up source
+    We set our ESP32 to wake up every 5 seconds
+    */
+    esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+    Serial.println("Setup ESP32 to sleep for every " + String(TIME_TO_SLEEP) +
+                    " Seconds");
 
-  // if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER)
-  // {
-  //   modem_wake();
-  // }
-  // else
-  {
     modem_on();
-    //modem_wake();
-    //modem_reset();
-  }
 
-  // Set GSM module baud rate and UART pins
-  SerialAT.begin(9600, SERIAL_8N1, MODEM_TX, MODEM_RX); //reversing them
-  String modemInfo = modem.getModemInfo();
-  Serial.print(F("Modem: "));
-  Serial.println(modemInfo);
+    // Set GSM module baud rate and UART pins
+    SerialAT.begin(9600, SERIAL_8N1, MODEM_TX, MODEM_RX); //reversing them
+    String modemInfo = modem.getModemInfo();
+    Serial.print(F("Modem: "));
+    Serial.println(modemInfo);
 
-  if (!modemConnected)   
-  {
-
-    //SIM7000
-
-    if (isNBIOT)
+    if (!modemConnected)   
     {
-      Serial.println("configuring NBIoT mode");
-      modem.setPreferredMode(38);
-      modem.setPreferredLTEMode(2);
-      modem.setOperatingBand(20); // Required for cosmote Greece
+        Serial.println("configuring GSM mode"); // AUTO or GSM ONLY
 
-      Serial.print(F("Waiting for network..."));
-      if (!modem.waitForNetwork(60000L))
-      {
-        Serial.println(" fail");
-        modem_reset();
-        shutdown();
-      }
-      Serial.println(" OK");
+        modem.setPreferredMode(CONNECTION_MODE); //2 Auto // 13 GSM only // 38 LTE only
 
-      Serial.print("Signal quality:");
-      Serial.println(modem.getSignalQuality());
+        Serial.print(F("Waiting for network..."));
+        if (!modem.waitForNetwork(60000L))
+        {
+            Serial.println(" fail");
+            modem_reset();
+            shutdown();
+        }
+        Serial.println(" OK");
 
-      Serial.print(F("Connecting to apn:"));
-      Serial.println(nbiot_apn);
-      if (!modem.gprsConnect(nbiot_apn, user, pass))
-      {
-        Serial.println(" failed");
-        modem_reset();
-        shutdown();
-      }
+        Serial.print("Signal quality:");
+        Serial.println(modem.getSignalQuality());
 
-      modemConnected = true;
-      Serial.println(" OK");
+        Serial.print(F("Connecting to "));
+        Serial.println(apn);
+        if (!modem.gprsConnect(apn, user, pass))
+        {
+            Serial.println(" failed");
+            modem_reset();
+            shutdown();
+        }
+
+        modemConnected = true;
+        Serial.println("#-#-# GSM OK #-#-#");
     }
-    else
+
+
+    Serial.print(F("Performing HTTP GET request... "));
+    int err = http.get(url_handshake);
+    if (err != 0) {
+        Serial.println(F("failed to connect"));
+        Serial.print("ErrNrr: ");
+        Serial.println(String(err));
+        delay(1000);
+        return;
+    }
+
+    int status = http.responseStatusCode();
+    Serial.println(F("Response status code: "));
+    Serial.println(status);
+    if (!status) {
+        delay(10000);
+        return;
+    }
+
+    Serial.println(F("Response Headers:"));
+    while (http.headerAvailable()) {
+        String headerName  = http.readHeaderName();
+        String headerValue = http.readHeaderValue();
+        Serial.println("    " + headerName + " : " + headerValue);
+    }
+
+    int length = http.contentLength();
+    if (length >= 0) {
+        Serial.print(F("Content length is: "));
+        Serial.println(length);
+    }
+    if (http.isResponseChunked()) {
+        Serial.println(F("The response is chunked"));
+    }
+
+    String body = http.responseBody();
+    Serial.println(F("Response:"));
+    Serial.println(body);
+
+
+    DynamicJsonDocument doc1(3072);
+
+
+    // You can use a Flash String as your JSON input.
+    // WARNING: the strings in the input will be duplicated in the JsonDocument.
+    DeserializationError errJ = deserializeJson(doc1, body);
+    if(errJ)
     {
-      Serial.println("configuring GSM mode"); // AUTO or GSM ONLY
-
-      modem.setPreferredMode(CONNECTION_MODE); //2 Auto // 13 GSM only // 38 LTE only
-
-      Serial.print(F("Waiting for network..."));
-      if (!modem.waitForNetwork(60000L))
-      {
-        Serial.println(" fail");
-        modem_reset();
-        shutdown();
-      }
-      Serial.println(" OK");
-
-      Serial.print("Signal quality:");
-      Serial.println(modem.getSignalQuality());
-
-      Serial.print(F("Connecting to "));
-      Serial.print(apn);
-      if (!modem.gprsConnect(apn, user, pass))
-      {
-        Serial.println(" failed");
-        modem_reset();
-        shutdown();
-      }
-
-      modemConnected = true;
-      Serial.println("#-#-# GSM OK #-#-#");
+        cout << "Error: " << errJ << endl;
+        return;
     }
-  }
 
-/*
-  if (!tb.connected())
-  {
-    // Connect to the ThingsBoard
-    Serial.print("Connecting to: ");
-    Serial.print(THINGSBOARD_SERVER);
-    Serial.print(" with token ");
-    Serial.println(TOKEN);
-    if (!tb.connect(THINGSBOARD_SERVER, TOKEN))
+    JsonObject obj = doc1.as<JsonObject>();
+    JsonArray n = obj["n_array"];
+
+    uint8_t un[n.size()];
+
+    copyArray(n, un, n.size());
+    Serial.println("Memcpy OK.");
+
+    BigInt e = 65537, mod, msg;
+
+    mod.importData(un, sizeof(un));
+    cout << "Import N OK!" << endl;
+
+    mod.print();
+
+    byte aes_key[16] = {0};
+    getAesKey(aes_key);
+
+    Serial.print("aes: ");
+    for(auto i=0; i<16; i++)
     {
-      Serial.println("Failed to connect");
-      modem_reset();
-      shutdown();
+        Serial.print( aes_key[i], HEX);
     }
-  }
-  Serial.println("Sending data...");
+    cout << endl << endl;
 
-  // Uploads new telemetry to ThingsBoard using MQTT.
-  // See https://thingsboard.io/docs/reference/mqtt-api/#telemetry-upload-api
-  // for more details
+    // tested OK
+    msg.importData(aes_key, 16);
 
-  if (tb.sendAttributeBool("beat", true))
-    ;
-  Serial.println("send beat");
+    cout << "aes_int: " << endl;
+    msg.print();
+    
+    // TODO: test failed
+    BigInt cipher = modPow(msg,e,mod);
+    cout << "Ciphered:" << endl;
+    cipher.print();
 
-  if (tb.sendTelemetryInt("bootCount", bootCount))
-    Serial.println("bootCount send");
+    // tested OK
+    uint8_t cipher_array[128] = {0};
+    bool sign;
+    cipher.exportData(cipher_array, sizeof(cipher_array), sign);
+    Serial.print("Cipher array: ");
+    for(int i=0; i<128; i++)
+    {
+        Serial.print(cipher_array[i], HEX);
+    }
+    cout << endl;
+        
+    // tested OK
+    char encoded[256] = {0};
+    base64_encode(encoded, (const char*)cipher_array, 256);
 
-  if (tb.sendTelemetryInt("d_gsm_CSQ", modem.getSignalQuality())) //CSQ need to convert to RSSI
-    Serial.println("d_gsm_CSQ send");
+    cout << "B64 Encoded: " << encoded << endl;
 
-  read_adc_bat(&v_bat);
-  if (tb.sendTelemetryInt("d_bat", v_bat))
-    Serial.print("read_adc_bat: ");
-  Serial.print(v_bat);
-  Serial.println(" send");
+    String senc = String(encoded);
+    Serial.println(String("Posting: ") + senc);
+    err = http.post(url_register, F("text/plain"), senc);
 
-  read_adc_solar(&v_solar);
-  if (tb.sendTelemetryInt("d_solar", v_solar))
-    Serial.print("read_adc_solar: ");
-  Serial.print(v_solar);
-  Serial.println(" send");
-*/
+    body = http.responseBody();
+    Serial.println(F("Response: "));
+    Serial.println(body);
 
-  Serial.print(F("Performing HTTP GET request... "));
-  int err = http.get(resource);
-  if (err != 0) {
-    Serial.println(F("failed to connect"));
-    delay(10000);
-    return;
-  }
+    http.stop();
+    Serial.println(F("Server disconnected"));
 
-  int status = http.responseStatusCode();
-  Serial.print(F("Response status code: "));
-  Serial.println(status);
-  if (!status) {
-    delay(10000);
-    return;
-  }
-
-  Serial.println(F("Response Headers:"));
-  while (http.headerAvailable()) {
-    String headerName  = http.readHeaderName();
-    String headerValue = http.readHeaderValue();
-    Serial.println("    " + headerName + " : " + headerValue);
-  }
-
-  int length = http.contentLength();
-  if (length >= 0) {
-    Serial.print(F("Content length is: "));
-    Serial.println(length);
-  }
-  if (http.isResponseChunked()) {
-    Serial.println(F("The response is chunked"));
-  }
-
-  String body = http.responseBody();
-  Serial.println(F("Response:"));
-  Serial.println(body);
-
-  Serial.print(F("Body length is: "));
-  Serial.println(body.length());
-
-  // Shutdown
-
-  http.stop();
-  Serial.println(F("Server disconnected"));
-
-  delay(1000); // required - else will shutdown too early and miss last value
-  shutdown();
+    delay(100); // required - else will shutdown too early and miss last value
+    shutdown();
 }
 
 void loop()
@@ -432,28 +457,28 @@ void loop()
 
 void read_adc_bat(uint16_t *voltage)
 {
-  uint32_t in = 0;
-  for (int i = 0; i < ADC_BATTERY_LEVEL_SAMPLES; i++)
-  {
-    in += (uint32_t)analogRead(PIN_ADC_BAT);
-  }
-  in = (int)in / ADC_BATTERY_LEVEL_SAMPLES;
+    uint32_t in = 0;
+    for (int i = 0; i < ADC_BATTERY_LEVEL_SAMPLES; i++)
+    {
+        in += (uint32_t)analogRead(PIN_ADC_BAT);
+    }
+    in = (int)in / ADC_BATTERY_LEVEL_SAMPLES;
 
-  uint16_t bat_mv = ((float)in / 4096) * 3600 * 2;
+    uint16_t bat_mv = ((float)in / 4096) * 3600 * 2;
 
-  *voltage = bat_mv;
+    *voltage = bat_mv;
 }
 
 void read_adc_solar(uint16_t *voltage)
 {
-  uint32_t in = 0;
-  for (int i = 0; i < ADC_BATTERY_LEVEL_SAMPLES; i++)
-  {
-    in += (uint32_t)analogRead(PIN_ADC_SOLAR);
-  }
-  in = (int)in / ADC_BATTERY_LEVEL_SAMPLES;
+    uint32_t in = 0;
+    for (int i = 0; i < ADC_BATTERY_LEVEL_SAMPLES; i++)
+    {
+        in += (uint32_t)analogRead(PIN_ADC_SOLAR);
+    }
+    in = (int)in / ADC_BATTERY_LEVEL_SAMPLES;
 
-  uint16_t bat_mv = ((float)in / 4096) * 3600 * 2;
+    uint16_t bat_mv = ((float)in / 4096) * 3600 * 2;
 
-  *voltage = bat_mv;
+    *voltage = bat_mv;
 }
