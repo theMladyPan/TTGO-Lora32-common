@@ -3,6 +3,7 @@ Battery test T-SIM7000 & Thingsboard
 */
 
 #define TINY_GSM_MODEM_SIM7000
+//#define DEBUG
 
 #define TINY_GSM_RX_BUFFER 1024 // Set RX buffer to 1Kb
 #undef DUMP_AT_COMMANDS
@@ -13,6 +14,8 @@ Battery test T-SIM7000 & Thingsboard
 #include <xbase64.h>
 #include <ArduinoJson.h>
 #include "BigInt.h"
+#include "modem.h"
+#include "mbedtls/rsa.h"
 
 extern "C" {
 #include "bootloader_random.h"
@@ -77,8 +80,9 @@ TinyGsm modem(serialGsm);
 // Initialize GSM client
 TinyGsmClient client(modem);
 
-#define DEVID 66666
+ModemIO modemio(&modem, (gpio_num_t)MODEM_RST, (gpio_num_t)MODEM_PWKEY, (gpio_num_t)MODEM_DTR);
 
+#define DEVID 66666
 
 using namespace std;
 
@@ -129,71 +133,11 @@ void print_wakeup_reason()
     }
 }
 
-void modem_reset()
-{
-    Serial.println("Modem hardware reset");
-    pinMode(MODEM_RST, OUTPUT);
-    digitalWrite(MODEM_RST, LOW);
-    delay(260); //Treset 252ms
-    digitalWrite(MODEM_RST, HIGH);
-    delay(4000); //Modem takes longer to get ready and reply after this kind of reset vs power on
-
-    //modem.factoryDefault();
-    //modem.restart(); //this results in +CGREG: 0,0
-}
-
-void modem_on()
-{
-    // Set-up modem  power pin
-    pinMode(MODEM_PWKEY, OUTPUT);
-    digitalWrite(MODEM_PWKEY, HIGH);
-    delay(10);
-    digitalWrite(MODEM_PWKEY, LOW);
-    delay(1010); //Ton 1sec
-    digitalWrite(MODEM_PWKEY, HIGH);
-
-    //wait_till_ready();
-    Serial.println("Waiting till modem ready...");
-    delay(4510); //Ton uart 4.5sec but seems to need ~7sec after hard (button) reset
-                //On soft-reset serial replies immediately.
-}
-
-void modem_off()
-{
-    //if you turn modem off while activating the fancy sleep modes it takes ~20sec, else its immediate
-    Serial.println("Going to sleep now with modem turned off");
-    //modem.gprsDisconnect();
-    //modem.radioOff();
-    modem.sleepEnable(false); // required in case sleep was activated and will apply after reboot
-    modem.poweroff();
-}
-
-// fancy low power mode - while connected
-void modem_sleep() // will have an effect after reboot and will replace normal power down
-{
-    Serial.println("Going to sleep now with modem in power save mode");
-    // needs reboot to activa and takes ~20sec to sleep
-    modem.PSM_mode();    //if network supports will enter a low power sleep PCM (9uA)
-    modem.eDRX_mode14(); // https://github.com/botletics/SIM7000-LTE-Shield/wiki/Current-Consumption#e-drx-mode
-    modem.sleepEnable(); //will sleep (1.7mA), needs DTR or PWRKEY to wake
-    pinMode(MODEM_DTR, OUTPUT);
-    digitalWrite(MODEM_DTR, HIGH);
-}
-
-void modem_wake()
-{
-    Serial.println("Wake up modem from sleep");
-    // DTR low to wake serial
-    pinMode(MODEM_DTR, OUTPUT);
-    digitalWrite(MODEM_DTR, LOW);
-    delay(50);
-    //wait_till_ready();
-}
 
 void shutdown()
 {
     //modem_sleep();
-    modem_off();
+    modemio.off();
 
     delay(100);
     Serial.flush();
@@ -204,19 +148,6 @@ void shutdown()
     esp_deep_sleep_start();
 }
 
-void wait_till_ready() // NOT WORKING - Attempt to minimize waiting time
-{
-    for (int8_t i = 0; i < 100; i++) //timeout 100 x 100ms = 10sec
-    {
-        if (modem.testAT())
-        {
-        //Serial.println("Wait time:%F sec\n", i/10));
-        Serial.printf("Wait time: %d\n", i);
-        break;
-        }
-        delay(100);
-    }
-}
 
 void getAesKey(byte *aes_key)
 {
@@ -245,9 +176,6 @@ uint16_t encrypt_to_ciphertext(char * msg, uint16_t msgLen, byte iv[]) {
 }
 */
 
-void testJson(){
-}
-
 void setup()
 {
     // Set console baud rate
@@ -255,7 +183,7 @@ void setup()
     delay(10);
     Serial.println(F("Started"));
     delay(3000);
-    testJson();
+    
 
     /*
     pinMode(PIN_ADC_BAT, ANALOG);
@@ -292,11 +220,11 @@ void setup()
     Serial.println("Setup ESP32 to sleep for every " + String(TIME_TO_SLEEP) +
                     " Seconds");
 
-    modem_on();
+    modemio.on();
 
     // Set GSM module baud rate and UART pins
     SerialAT.begin(9600, SERIAL_8N1, MODEM_TX, MODEM_RX); //reversing them
-    String modemInfo = modem.getModemInfo();
+    String modemInfo = modemio.info();
     Serial.print(F("Modem: "));
     Serial.println(modemInfo);
 
@@ -310,7 +238,7 @@ void setup()
         if (!modem.waitForNetwork(60000L))
         {
             Serial.println(" fail");
-            modem_reset();
+            modemio.reset();
             shutdown();
         }
         Serial.println(" OK");
@@ -323,7 +251,7 @@ void setup()
         if (!modem.gprsConnect(apn, user, pass))
         {
             Serial.println(" failed");
-            modem_reset();
+            modemio.reset();
             shutdown();
         }
 
@@ -372,7 +300,6 @@ void setup()
 
 
     DynamicJsonDocument doc1(3072);
-
 
     // You can use a Flash String as your JSON input.
     // WARNING: the strings in the input will be duplicated in the JsonDocument.
