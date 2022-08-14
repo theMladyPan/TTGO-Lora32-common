@@ -10,19 +10,33 @@ Battery test T-SIM7000 & Thingsboard
 
 #include "TinyGsmClient.h"
 #include <ArduinoHttpClient.h>
-#include <AESLib.h>
+//#include <AESLib.h>
 #include <xbase64.h>
 #include <ArduinoJson.h>
-#include "BigInt.h"
+//#include "BigInt.h"
 #include "modem.h"
-#include "mbedtls/rsa.h"
+//#include "mbedtls/rsa.h"
+#include "ESP32Time.h"
+#include <iostream>
+#include "utils.h"
+#include <string>
+
+#include <vector>
+
+#define ADC_BAT ADC1_CHANNEL_7
+#define ADC_SOLAR ADC1_CHANNEL_3
+#define ADC_ATTN ADC_ATTEN_DB_11	
+
+#define PIN_LED_NUM 12
+#define GPIO_PIN_LED (gpio_num_t)PIN_LED_NUM
+
 
 extern "C" {
 #include "bootloader_random.h"
 }
 
-
-AESLib aesLib;
+#define VERBOSE 1
+//AESLib aesLib;
 
 
 #define uS_TO_S_FACTOR 1000000 /* Conversion factor for micro seconds to seconds */
@@ -86,20 +100,25 @@ ModemIO modemio(&modem, (gpio_num_t)MODEM_RST, (gpio_num_t)MODEM_PWKEY, (gpio_nu
 
 using namespace std;
 
-
-// Server details
-const char server[]   = "65.19.191.151";
-const char url_resource[] = "/xerxes";
+// NOTE: Server details
+const String TOKEN = "ltKh+leoyblBXyFvjnbaiw==";
+const String dbname = "sim_test";
+const String colname = String(DEVID);
 const char url_handshake[] = "/handshake/";
-String url_register = "/register/" + String(DEVID) + "/"; 
+const String url_welcome = "/welcome/";
+const String url_register = "/register/" + String(DEVID) + "/"; 
+const String url_post_plain = "/post/plain/" + dbname + "/" + colname + "/" + String(DEVID) + "/" + TOKEN + "/";
+
+const char server[]   = "65.19.191.151";
 const int  port       = 8000;
 HttpClient http(client, server, port);
+
+// create RTC instance:
+ESP32Time rtc(0);
 
 // Set to true, if modem is connected
 bool modemConnected = false;
 
-void read_adc_bat(uint16_t *voltage);
-void read_adc_solar(uint16_t *voltage);
 void shutdown();
 void wait_till_ready();
 void modem_off();
@@ -136,12 +155,9 @@ void print_wakeup_reason()
 
 void shutdown()
 {
-    //modem_sleep();
-    modemio.off();
+    // modemio.sleep();
+    // modemio.off();
 
-    delay(100);
-    Serial.flush();
-    esp_deep_sleep_start();
     Serial.println("Going to sleep now");
     delay(100);
     Serial.flush();
@@ -156,10 +172,12 @@ void getAesKey(byte *aes_key)
     bootloader_random_disable();
 }
 
+/*
 // Generate IV (once)
 void aes_init() {
     aesLib.set_paddingmode((paddingMode)0);
 }
+*/
 
 unsigned char ciphertext[2*16] = {0}; // THIS IS OUTPUT BUFFER (FOR BASE64-ENCODED ENCRYPTED DATA)
 
@@ -176,117 +194,72 @@ uint16_t encrypt_to_ciphertext(char * msg, uint16_t msgLen, byte iv[]) {
 }
 */
 
-void setup()
+uint16_t connectModem()
 {
-    // Set console baud rate
-    Serial.begin(SERIAL_DEBUG_BAUD);
-    delay(10);
-    Serial.println(F("Started"));
-    delay(3000);
-    
+    Serial.println("configuring GSM mode"); // AUTO or GSM ONLY
 
-    /*
-    pinMode(PIN_ADC_BAT, ANALOG);
-    pinMode(PIN_ADC_SOLAR, ANALOG);
+    modem.setPreferredMode(CONNECTION_MODE); //2 Auto // 13 GSM only // 38 LTE only
 
-    uint16_t v_bat = 0;
-    uint16_t v_solar = 0;
-
-    while (1)
+    Serial.print(F("Waiting for network..."));
+    if (!modem.waitForNetwork(60000L))
     {
-    read_adc_bat(&v_bat);
-    Serial.print("BAT: ");
-    Serial.print(v_bat);
+        Serial.println(" fail");
+        modemio.reset();
+        shutdown();
+    }
+    Serial.println(" OK");
 
-    read_adc_solar(&v_solar);
-    Serial.print(" SOLAR: ");
-    Serial.println(v_solar);
+    uint16_t quality = modem.getSignalQuality();
+    Serial.print("Signal quality:");
+    Serial.println(quality);
 
-    delay(1000);
-    }*/
-
-    //Increment boot number and print it every reboot
-    ++bootCount;
-    Serial.println("Boot number: " + String(bootCount));
-
-    //Print the wakeup reason for ESP32
-    print_wakeup_reason();
-
-    /*
-    First we configure the wake up source
-    We set our ESP32 to wake up every 5 seconds
-    */
-    esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
-    Serial.println("Setup ESP32 to sleep for every " + String(TIME_TO_SLEEP) +
-                    " Seconds");
-
-    modemio.on();
-
-    // Set GSM module baud rate and UART pins
-    SerialAT.begin(9600, SERIAL_8N1, MODEM_TX, MODEM_RX); //reversing them
-    String modemInfo = modemio.info();
-    Serial.print(F("Modem: "));
-    Serial.println(modemInfo);
-
-    if (!modemConnected)   
+    Serial.print(F("Connecting to "));
+    Serial.println(apn);
+    if (!modem.gprsConnect(apn, user, pass))
     {
-        Serial.println("configuring GSM mode"); // AUTO or GSM ONLY
-
-        modem.setPreferredMode(CONNECTION_MODE); //2 Auto // 13 GSM only // 38 LTE only
-
-        Serial.print(F("Waiting for network..."));
-        if (!modem.waitForNetwork(60000L))
-        {
-            Serial.println(" fail");
-            modemio.reset();
-            shutdown();
-        }
-        Serial.println(" OK");
-
-        Serial.print("Signal quality:");
-        Serial.println(modem.getSignalQuality());
-
-        Serial.print(F("Connecting to "));
-        Serial.println(apn);
-        if (!modem.gprsConnect(apn, user, pass))
-        {
-            Serial.println(" failed");
-            modemio.reset();
-            shutdown();
-        }
-
-        modemConnected = true;
-        Serial.println("#-#-# GSM OK #-#-#");
+        Serial.println(" failed");
+        modemio.reset();
+        shutdown();
     }
 
+    modemConnected = true;
+    return quality;
+}
 
-    Serial.print(F("Performing HTTP GET request... "));
-    int err = http.get(url_handshake);
+int httpGet(String *body, const String url, bool verbose=false)
+{
+    if(verbose)Serial.print(F("Performing HTTP GET request... "));
+    int err = http.get(url);
     if (err != 0) {
-        Serial.println(F("failed to connect"));
-        Serial.print("ErrNrr: ");
-        Serial.println(String(err));
-        delay(1000);
-        return;
+        if(verbose){
+            Serial.println(F("failed to connect"));
+            Serial.print("ErrNrr: ");
+            Serial.println(String(err));
+            delay(100);
+        }
+        return 0;
     }
 
     int status = http.responseStatusCode();
-    Serial.println(F("Response status code: "));
-    Serial.println(status);
+    if(verbose){
+        Serial.println(F("Response status code: "));
+        Serial.println(status);
+    }
     if (!status) {
-        delay(10000);
-        return;
+        delay(1000);
+        return 0;
     }
 
-    Serial.println(F("Response Headers:"));
+    if(verbose)Serial.println(F("Response Headers:"));
     while (http.headerAvailable()) {
         String headerName  = http.readHeaderName();
         String headerValue = http.readHeaderValue();
-        Serial.println("    " + headerName + " : " + headerValue);
+        if(verbose)Serial.println("    " + headerName + " : " + headerValue);
     }
+        
 
     int length = http.contentLength();
-    if (length >= 0) {
+    if (length >= 0 && verbose) {
         Serial.print(F("Content length is: "));
         Serial.println(length);
     }
@@ -294,16 +267,74 @@ void setup()
         Serial.println(F("The response is chunked"));
     }
 
-    String body = http.responseBody();
+    *body = http.responseBody();
     Serial.println(F("Response:"));
-    Serial.println(body);
+    Serial.println(*body);
 
+    return status;
+}
 
+int httpPostJson(String *body, const String url, String *data, bool verbose=false)
+{
+    if(verbose)Serial.println(F("Performing HTTP POST request, sending: "));
+    if(verbose)Serial.println(*data);
+
+    int err = http.post(url, F("document/json"), *data);
+    if (err != 0) {
+        if(verbose){
+            Serial.println(F("failed to connect"));
+            Serial.print("ErrNrr: ");
+            Serial.println(String(err));
+            delay(100);
+        }
+        return 0;
+    }
+
+    int status = http.responseStatusCode();
+    if(verbose){
+        Serial.println(F("Response status code: "));
+        Serial.println(status);
+    }
+    if (!status) {
+        delay(1000);
+        return 0;
+    }
+
+    if(verbose)Serial.println(F("Response Headers:"));
+    while (http.headerAvailable()) {
+        String headerName  = http.readHeaderName();
+        String headerValue = http.readHeaderValue();
+        if(verbose)Serial.println("    " + headerName + " : " + headerValue);
+    }
+        
+
+    int length = http.contentLength();
+    if (length >= 0 && verbose) {
+        Serial.print(F("Content length is: "));
+        Serial.println(length);
+    }
+    if (http.isResponseChunked()) {
+        Serial.println(F("The response is chunked"));
+    }
+
+    *body = http.responseBody();
+    Serial.println(F("Response:"));
+    Serial.println(*body);
+
+    return status;
+}
+
+// TODO: Toto treba spraviť
+/*
+void cipherTest(){
+    String *msgBody = new String();
+    httpGet(msgBody, url_handshake, true);
+    
     DynamicJsonDocument doc1(3072);
 
     // You can use a Flash String as your JSON input.
     // WARNING: the strings in the input will be duplicated in the JsonDocument.
-    DeserializationError errJ = deserializeJson(doc1, body);
+    DeserializationError errJ = deserializeJson(doc1, *msgBody);
     if(errJ)
     {
         cout << "Error: " << errJ << endl;
@@ -341,7 +372,7 @@ void setup()
     cout << "aes_int: " << endl;
     msg.print();
     
-    // TODO: test failed
+    // FIXME: test failed
     BigInt cipher = modPow(msg,e,mod);
     cout << "Ciphered:" << endl;
     cipher.print();
@@ -363,49 +394,146 @@ void setup()
 
     cout << "B64 Encoded: " << encoded << endl;
 
-    String senc = String(encoded);
-    Serial.println(String("Posting: ") + senc);
-    err = http.post(url_register, F("text/plain"), senc);
+    String *senc = new String(encoded);
+    Serial.println(String("Posting: ") + *senc);
+    //int err = http.post(url_register, F("text/plain"), senc);
+    httpPost(msgBody, url_register, senc, true);
 
-    body = http.responseBody();
+    *msgBody = http.responseBody();
     Serial.println(F("Response: "));
-    Serial.println(body);
+    Serial.println(*msgBody);
+}
+*/
+
+
+void ledOn()
+{
+    digitalWrite(PIN_LED_NUM, LOW);
+}
+
+
+void ledOff()
+{
+    digitalWrite(PIN_LED_NUM, HIGH);
+}
+
+
+void flash(int n)
+{
+    for(auto i=0; i<n; i++)
+    {
+        ledOn();
+        delay(200);
+        ledOff();
+        delay(200);
+    }
+}
+
+
+void setup()
+{
+    pinMode(PIN_LED_NUM, OUTPUT);
+}
+
+void loop()
+{
+    // Set console baud rate
+    Serial.begin(SERIAL_DEBUG_BAUD);
+    delay(10);
+    Serial.println(F("Started"));
+    Serial.print("Current time is: ");
+    Serial.println(rtc.getDateTime(true));
+    
+    float vBat = adc1_read_precise(ADC_BAT, 1024)*2;
+
+    cout << "Vbat: " << vBat << "mV." << endl;
+
+    delay(100);
+    flash(1);
+    
+    //Increment boot number and print it every reboot
+    ++bootCount;
+    Serial.println("Boot number: " + String(bootCount));
+
+    //Print the wakeup reason for ESP32
+    print_wakeup_reason();
+
+    /*
+    First we configure the wake up source
+    We set our ESP32 to wake up every 5 seconds
+    */
+    esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+    Serial.println("Setup ESP32 to sleep for every " + String(TIME_TO_SLEEP) +
+                    " Seconds");
+
+    modemio.on();
+    modem.enableGPS();
+    // Set GSM module baud rate and UART pins
+    SerialAT.begin(9600, SERIAL_8N1, MODEM_TX, MODEM_RX); //reversing them
+    String modemInfo = modemio.info();
+    Serial.print(F("Modem: "));
+    Serial.println(modemInfo);
+
+    if (!modemConnected)   
+    {
+        connectModem();
+    }
+
+    String *msgBody = new String();
+
+    if(rtc.getEpoch() < 1000000000)
+    {
+        httpGet(msgBody, url_welcome, VERBOSE);
+        tryAndSetTime(msgBody, &rtc);
+    }
+    
+    Serial.print("Web DateTime: ");
+    Serial.println(rtc.getDateTime());
+    
+    
+    float lat, lon, spd;
+    int alt, vsat, usat;
+    modem.getGPS(&lat, &lon, &spd, &alt, &vsat, &usat);
+
+    DynamicJsonDocument doc1(2048);
+
+    doc1["time"]["epoch"] = rtc.getEpoch();
+    doc1["time"]["gm_time"] = rtc.getDateTime();
+    doc1["time"]["gsm"] = modem.getGSMDateTime(DATE_FULL);
+
+    doc1["vbat"] = vBat;
+    doc1["info"]["gsm"]["signal"] = modem.getSignalQuality();
+    doc1["info"]["gsm"]["operator"] = modem.getOperator();
+    doc1["info"]["gsm"]["ip"] = modem.getLocalIP();
+    String GSMlocation(modem.getGsmLocation());
+    if (GSMlocation != "")
+    {
+        doc1["info"]["gsm"]["location"] = GSMlocation;
+    }
+
+    if(vsat > 0)
+    {
+        #ifdef VERBOSE
+        Serial.println("GPS ON");
+        #endif //VERBOSE
+        doc1["info"]["gps"]["lat"] = lat;
+        doc1["info"]["gps"]["lon"] = lon;
+        doc1["info"]["gps"]["alt"] = alt;
+        doc1["info"]["gps"]["sat"] = vsat;      
+        flash(5);
+    }
+
+    String jsonString;
+    serializeJson(doc1, jsonString);
+
+    httpPostJson(msgBody, url_post_plain, &jsonString, true);
 
     http.stop();
     Serial.println(F("Server disconnected"));
 
     delay(100); // required - else will shutdown too early and miss last value
+
     shutdown();
-}
 
-void loop()
-{
-}
-
-void read_adc_bat(uint16_t *voltage)
-{
-    uint32_t in = 0;
-    for (int i = 0; i < ADC_BATTERY_LEVEL_SAMPLES; i++)
-    {
-        in += (uint32_t)analogRead(PIN_ADC_BAT);
-    }
-    in = (int)in / ADC_BATTERY_LEVEL_SAMPLES;
-
-    uint16_t bat_mv = ((float)in / 4096) * 3600 * 2;
-
-    *voltage = bat_mv;
-}
-
-void read_adc_solar(uint16_t *voltage)
-{
-    uint32_t in = 0;
-    for (int i = 0; i < ADC_BATTERY_LEVEL_SAMPLES; i++)
-    {
-        in += (uint32_t)analogRead(PIN_ADC_SOLAR);
-    }
-    in = (int)in / ADC_BATTERY_LEVEL_SAMPLES;
-
-    uint16_t bat_mv = ((float)in / 4096) * 3600 * 2;
-
-    *voltage = bat_mv;
+    //esp_restart();
 }
