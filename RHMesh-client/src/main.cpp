@@ -24,16 +24,13 @@
 //              and Charles-Henri Hallard (https://github.com/hallard/RadioHead)
 
 #include <stdio.h>
-#include <signal.h>
 #include <unistd.h>
+
+#define RH_MESH_MAX_MESSAGE_LEN 128
 
 #include <RHMesh.h>
 #include <RH_RF95.h>
 
-#define RH_MESH_MAX_MESSAGE_LEN 50
-
-//Function Definitions
-void sig_handler(int sig);
 
 #define SCK     5    // GPIO5  -- SX1278's SCK
 #define MISO    19   // GPIO19 -- SX1278's MISO
@@ -57,14 +54,7 @@ void sig_handler(int sig);
 
 //RFM95 Configuration
 #define RFM95_FREQUENCY  868.00
-#define RFM95_TXPOWER 14
-
-
-#define RH_MESH_MAX_MESSAGE_LEN 50
-
-
-//Function Definitions
-void sig_handler(int sig);
+#define RFM95_TXPOWER 20
 
 
 // Singleton instance of the radio driver
@@ -74,94 +64,99 @@ RH_RF95 rf95(RFM95_CS_PIN, RFM95_IRQ_PIN);
 RHMesh manager(rf95, CLIENT_ADDRESS);
 
 //Flag for Ctrl-C
-int flag = 0;
+String flag = "";
+
 
 void setup()
 {
     Serial.begin(115200);
+    Serial.setRxTimeout(100);
 }
 
-int main (int argc, const char* argv[] );
+int main ();
 
 void loop()
 {
-    main(NULL, NULL);
+    main();
+    esp_restart();
 }
 
 //Main Function
-int main (int argc, const char* argv[] )
+int main ()
 {
+    printf( "\nRPI rf95_mesh_client startup OK.\n" );
 
-  printf( "\nRPI rf95_mesh_client startup OK.\n" );
-
-  gpio_set_direction(LED_PIN_NUM, GPIO_MODE_OUTPUT);
-  printf("\nINFO: LED on GPIO %d\n", (uint8_t) RFM95_LED);
-  gpio_set_level(LED_PIN_NUM, HIGH);
-  delay(500);
-  gpio_set_level(LED_PIN_NUM, LOW);
-
-  if (!manager.init())
-  {
-    printf( "\n\nMesh Manager Failed to initialize.\n\n" );
-    return 1;
-  }
-
-  /* Begin Manager/Driver settings code */
-  printf("\nRFM 95 Settings:\n");
-  printf("Frequency= %d MHz\n", (uint16_t) RFM95_FREQUENCY);
-  printf("Power= %d\n", (uint8_t) RFM95_TXPOWER);
-  printf("Client(This) Address= %d\n", CLIENT_ADDRESS);
-  printf("Server Address 1= %d\n", SERVER1_ADDRESS);
-  printf("Server Address 2= %d\n", SERVER2_ADDRESS);
-  printf("Server Address 3= %d\n", SERVER3_ADDRESS);
-  printf("Route: Client->Server 3 is automatic in MESH.\n");
-  rf95.setTxPower(RFM95_TXPOWER, false);
-  rf95.setFrequency(RFM95_FREQUENCY);
-  /* End Manager/Driver settings code */
-
-
-  uint8_t data[] = "Hello World!";
-  // Dont put this on the stack:
-  uint8_t buf[RH_MESH_MAX_MESSAGE_LEN];
-
-  while(!flag)
-  {
-    printf("Sending to manager_mesh_server3");
-
+    gpio_set_direction(LED_PIN_NUM, GPIO_MODE_OUTPUT);
+    printf("\nINFO: LED on GPIO %d\n", (uint8_t) RFM95_LED);
     gpio_set_level(LED_PIN_NUM, HIGH);
+    delay(500);
+    gpio_set_level(LED_PIN_NUM, LOW);
 
-    // Send a message to a rf95_mesh_server
-    // A route to the destination will be automatically discovered.
-    if (manager.sendtoWait(data, sizeof(data), SERVER3_ADDRESS) == RH_ROUTER_ERROR_NONE)
+    if (!manager.init())
     {
-      // It has been reliably delivered to the next node.
-      // Now wait for a reply from the ultimate server
-      uint8_t len = sizeof(buf);
-      uint8_t from;
-      if (manager.recvfromAckTimeout(buf, &len, 3000, &from))
-      {
-        Serial.print("got reply from : 0x");
-        Serial.print(from, HEX);
-        Serial.print(": ");
-        Serial.println((char*)buf);
-      }
-      else
-      {
-        Serial.println("No reply, is rf95_mesh_server1, rf95_mesh_server2 and rf95_mesh_server3 running?");
-      }
+        printf( "\n\nMesh Manager Failed to initialize.\n\n" );
+        return 1;
     }
-    else
-      Serial.println("sendtoWait failed. Are the intermediate mesh servers running?");
-#ifdef RFM95_LED
-  gpio_set_level(LED_PIN_NUM, LOW);
-#endif
-    delay(400);
-  }
-  printf( "\nrf95_mesh_client Tester Ending\n" );
-  return 0;
-}
 
-void sig_handler(int sig)
-{
-  flag=1;
+    /* Begin Manager/Driver settings code */
+    printf("\nRFM 95 Settings:\n");
+    printf("Frequency= %d MHz\n", (uint16_t) RFM95_FREQUENCY);
+    printf("Power= %d\n", (uint8_t) RFM95_TXPOWER);
+    printf("Client(This) Address= %d\n", CLIENT_ADDRESS);
+    printf("Server Address 1= %d\n", SERVER1_ADDRESS);
+    printf("Server Address 2= %d\n", SERVER2_ADDRESS);
+    printf("Server Address 3= %d\n", SERVER3_ADDRESS);
+    printf("Route: Client->Server 3 is automatic in MESH.\n");
+    rf95.setTxPower(RFM95_TXPOWER, false);
+    rf95.setFrequency(RFM95_FREQUENCY);
+    /* End Manager/Driver settings code */
+
+
+
+    printf("starting transmission...");
+    uint8_t data[] = "Hello World!";
+    // Dont put this on the stack:
+    uint8_t buf[RH_MESH_MAX_MESSAGE_LEN];
+
+    while(flag == "")
+    {
+        printf("\nSending to manager_mesh_server3\n");
+
+        gpio_set_level(LED_PIN_NUM, HIGH);
+
+        // Send a message to a rf95_mesh_server
+        // A route to the destination will be automatically discovered.
+        if (manager.sendtoWait(data, sizeof(data), SERVER3_ADDRESS) == RH_ROUTER_ERROR_NONE)
+        {
+            // It has been reliably delivered to the next node.
+            // Now wait for a reply from the ultimate server
+            uint8_t len = sizeof(buf);
+            uint8_t from;
+            if (manager.recvfromAckTimeout(buf, &len, 3000, &from))
+            {
+                Serial.print("got reply from : 0x");
+                Serial.print(from, HEX);
+                Serial.print(": ");
+                Serial.println((char*)buf);
+            }
+            else
+            {
+                Serial.println("No reply, is rf95_mesh_server1, rf95_mesh_server2 and rf95_mesh_server3 running?");
+            }
+        }
+        else
+        {
+            Serial.println("sendtoWait failed. Are the intermediate mesh servers running?");
+        }
+        gpio_set_level(LED_PIN_NUM, LOW);
+        if(Serial.available())
+        {
+            flag = Serial.readString();
+        }
+        delay(400);
+
+    }
+
+    printf( "\nrf95_mesh_client Tester Ending\n" );
+    return 0;
 }
