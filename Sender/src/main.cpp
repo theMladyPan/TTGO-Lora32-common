@@ -110,7 +110,7 @@ void setup() {
     LoRa_rxMode();
 
     gpio_wakeup_enable(static_cast<gpio_num_t>(LORA_IRQ), GPIO_INTR_HIGH_LEVEL); 
-    esp_sleep_enable_timer_wakeup(5e6); // sleep for 1s max
+    esp_sleep_enable_timer_wakeup(2e6); // sleep for 1s max
     esp_sleep_enable_gpio_wakeup();
     
     Serial.println("init ok");
@@ -150,16 +150,6 @@ void loop() {
     //after wake up from txDone evt:
     Serial.print(", sent in "+String(millis()-tStart)+"ms\n");
     message("Done!", 0, 32, false); 
-    delay(200);
-
-    if(rcvd)
-    {
-        rcvd = 0;
-        Serial.println("Received: " + rcvdMsg);
-        message("RSSI: "+String(rcvdMsg), 0, 48, false);
-    }
-    delay(500);
-    display.displayOff();
     esp_light_sleep_start(); // sleep for another second
 
     
