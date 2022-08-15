@@ -65,7 +65,7 @@ void ModemIO::on()
 
     //wait_till_ready();
     Serial.println("Waiting till modem ready...");
-    delay(4510); //Ton uart 4.5sec but seems to need ~7sec after hard (button) reset
+    // delay(4510); //Ton uart 4.5sec but seems to need ~7sec after hard (button) reset
                 //On soft-reset serial replies immediately.
 }
 
