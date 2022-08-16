@@ -55,80 +55,75 @@ bool tryAndSetTimeGSM(String *gsmTime, ESP32Time *rtc)
     return true;
 }
 
+/**
+ * @brief get average of n-samples of raw reading from adc channel 
+ * 
+ * @param adc_ch 
+ * @param n 
+ * @return uint64_t 
+ */
+uint64_t adc1_get_raw_n(adc1_channel_t adc_ch, uint16_t n){
+    uint64_t raw = 0;
+
+    for (uint16_t j=0; j<n; j++)
+    {
+        raw += (uint32_t)adc1_get_raw(adc_ch);
+    }
+    return raw/n;
+}
+
 
 float adc1_read_auto(adc1_channel_t adc_ch, uint16_t samples=1)
 {
     adc_atten_t atten;
-    uint64_t raw = 0;
     esp_adc_cal_characteristics_t adc1_chars;
 
-    adc1_config_channel_atten(adc_ch, atten);
-    esp_adc_cal_characterize(ADC_UNIT_1, atten, ADC_WIDTH_BIT_12, 0, &adc1_chars);
+    adc1_config_channel_atten(adc_ch, ADC_ATTEN_DB_11);
+    esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, 0, &adc1_chars);
 
     // read approximate adc input in mV
     uint32_t mV = esp_adc_cal_raw_to_voltage(adc1_get_raw(adc_ch), &adc1_chars);    
 
-    if(mV < 750)
+    if(mV < 900)
     {
         // output below 750mv, no attenuation needed
         atten = ADC_ATTEN_DB_0;
         adc1_config_channel_atten(adc_ch, atten);
         esp_adc_cal_characterize(ADC_UNIT_1, atten, ADC_WIDTH_BIT_12, 0, &adc1_chars);
-        #ifdef VERBOSE
-        Serial.println("Atten: 0DB");
-        #endif
-    }else if (mV < 1000)
+    }else if (mV < 1200)
     {
         // apply 1.33x attenuation
         atten = ADC_ATTEN_DB_2_5;
         adc1_config_channel_atten(adc_ch, atten);
         esp_adc_cal_characterize(ADC_UNIT_1, atten, ADC_WIDTH_BIT_12, 0, &adc1_chars);
-        #ifdef VERBOSE
-        Serial.println("Atten: 2_5DB");
-        #endif
-    }else if (mV < 1500)
+    }else if (mV < 1700)
     {
         // apply 2x attenuation
         atten = ADC_ATTEN_DB_6;
         adc1_config_channel_atten(adc_ch, atten);
         esp_adc_cal_characterize(ADC_UNIT_1, atten, ADC_WIDTH_BIT_12, 0, &adc1_chars);
-        #ifdef VERBOSE
-        Serial.println("Atten: 6DB");
-        #endif
     }else{
         // max attenuation needed for best result. Already set up.
-        #ifdef VERBOSE
-        Serial.println("Atten: 11DB");
-        #endif
     }
-    
-    for (uint16_t j=0; j<samples; j++)
-    {
-        raw += (uint32_t)adc1_get_raw(adc_ch);
-    }
-    
-    mV = esp_adc_cal_raw_to_voltage(raw/samples, &adc1_chars);    
+        
+    mV = esp_adc_cal_raw_to_voltage(adc1_get_raw_n(adc_ch, samples), &adc1_chars);     
 
     return (float)mV / 1000.0;
 }
+
 
 float adc1_read(adc1_channel_t adc_ch, uint16_t samples=1)
 {
     esp_adc_cal_characteristics_t adc1_chars;
     adc1_config_channel_atten(adc_ch, ADC_ATTEN_DB_11);
     esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, 0, &adc1_chars);
-
-    uint64_t raw;
-
-    for (uint16_t j=0; j<samples; j++)
-    {
-        raw += (uint32_t)adc1_get_raw(adc_ch);
-    }
     
-    uint32_t mV = esp_adc_cal_raw_to_voltage(raw/samples, &adc1_chars);    
+    uint32_t mV = esp_adc_cal_raw_to_voltage(adc1_get_raw_n(adc_ch, samples), &adc1_chars);    
 
     return (float)mV / 1000.0;
 }
+
+
 
 
 /**

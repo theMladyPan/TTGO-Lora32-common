@@ -40,7 +40,7 @@ extern "C" {
 #define Y2K1 1000000000
 #define uS_TO_S_FACTOR 1000000 /* Conversion factor for micro seconds to seconds */
 #define us_in_s 1000000
-#define TIME_TO_SLEEP 60       /* ESP32 should sleep more seconds  (note SIM7000 needs ~20sec to turn off if sleep is activated) */
+#define TIME_TO_SLEEP 300       /* ESP32 should sleep more seconds  (note SIM7000 needs ~20sec to turn off if sleep is activated) */
 RTC_DATA_ATTR int bootCount = 0;
 
 HardwareSerial serialGsm(1);
@@ -91,7 +91,7 @@ TinyGsm modem(serialGsm);
 // Baud rate for debug serial
 #define SERIAL_DEBUG_BAUD 115200
 
-// Initialize GSM client
+// Initialize GSM client+
 TinyGsmClient client(modem);
 
 ModemIO modemio(&modem, (gpio_num_t)MODEM_RST, (gpio_num_t)MODEM_PWKEY, (gpio_num_t)MODEM_DTR);
@@ -161,35 +161,6 @@ void shutdown()
     esp_deep_sleep(TIME_TO_SLEEP * uS_TO_S_FACTOR);
 }
 
-
-void getAesKey(byte *aes_key)
-{
-    bootloader_random_enable();
-    esp_fill_random(aes_key, 16);
-    bootloader_random_disable();
-}
-
-/*
-// Generate IV (once)
-void aes_init() {
-    aesLib.set_paddingmode((paddingMode)0);
-}
-*/
-
-unsigned char ciphertext[2*16] = {0}; // THIS IS OUTPUT BUFFER (FOR BASE64-ENCODED ENCRYPTED DATA)
-
-/*
-uint16_t encrypt_to_ciphertext(char * msg, uint16_t msgLen, byte iv[]) {
-    byte aes_iv[16] = {0};
-    aesLib.gen_iv(aes_iv);
-
-    Serial.println("Calling encrypt (string)...");
-    // aesLib.get_cipher64_length(msgLen);
-    int cipherlength = aesLib.encrypt((byte*)msg, msgLen, (char*)ciphertext, aes_key, sizeof(aes_key), iv);
-                    // uint16_t encrypt(byte input[], uint16_t input_length, char * output, byte key[],int bits, byte my_iv[]);
-    return cipherlength;
-}
-*/
 
 uint16_t connectModem()
 {
@@ -319,87 +290,6 @@ int httpPostJson(String *body, const String url, String *data, bool verbose=fals
     return status;
 }
 
-// TODO: Toto treba spraviť
-/*
-void cipherTest(){
-    String *msgBody = new String();
-    httpGet(msgBody, url_handshake, true);
-    
-    DynamicJsonDocument doc1(3072);
-
-    // You can use a Flash String as your JSON input.
-    // WARNING: the strings in the input will be duplicated in the JsonDocument.
-    DeserializationError errJ = deserializeJson(doc1, *msgBody);
-    if(errJ)
-    {
-        cout << "Error: " << errJ << endl;
-        return;
-    }
-
-    JsonObject obj = doc1.as<JsonObject>();
-    JsonArray n = obj["n_array"];
-
-    uint8_t un[n.size()];
-
-    copyArray(n, un, n.size());
-    Serial.println("Memcpy OK.");
-
-    BigInt e = 65537, mod, msg;
-
-    mod.importData(un, sizeof(un));
-    cout << "Import N OK!" << endl;
-
-    mod.print();
-
-    byte aes_key[16] = {0};
-    getAesKey(aes_key);
-
-    Serial.print("aes: ");
-    for(auto i=0; i<16; i++)
-    {
-        Serial.print( aes_key[i], HEX);
-    }
-    cout << endl << endl;
-
-    // tested OK
-    msg.importData(aes_key, 16);
-
-    cout << "aes_int: " << endl;
-    msg.print();
-    
-    // FIXME: test failed
-    BigInt cipher = modPow(msg,e,mod);
-    cout << "Ciphered:" << endl;
-    cipher.print();
-
-    // tested OK
-    uint8_t cipher_array[128] = {0};
-    bool sign;
-    cipher.exportData(cipher_array, sizeof(cipher_array), sign);
-    Serial.print("Cipher array: ");
-    for(int i=0; i<128; i++)
-    {
-        Serial.print(cipher_array[i], HEX);
-    }
-    cout << endl;
-        
-    // tested OK
-    char encoded[256] = {0};
-    base64_encode(encoded, (const char*)cipher_array, 256);
-
-    cout << "B64 Encoded: " << encoded << endl;
-
-    String *senc = new String(encoded);
-    Serial.println(String("Posting: ") + *senc);
-    //int err = http.post(url_register, F("text/plain"), senc);
-    httpPost(msgBody, url_register, senc, true);
-
-    *msgBody = http.responseBody();
-    Serial.println(F("Response: "));
-    Serial.println(*msgBody);
-}
-*/
-
 
 void ledOn()
 {
@@ -442,10 +332,6 @@ void loop()
 
     auto start = rtc.getEpoch();
     
-    float vBat = adc1_read(ADC_BAT, 128)*2;
-
-    cout << "Vbat: " << vBat << "V." << endl;
-
     delay(100);
     flash(1);
     
@@ -462,6 +348,9 @@ void loop()
 
     modemio.on();
     modem.enableGPS();
+    modem.getBattVoltage();
+
+
     // Set GSM module baud rate and UART pins
     SerialAT.begin(115200, SERIAL_8N1, MODEM_TX, MODEM_RX);
 
@@ -496,11 +385,13 @@ void loop()
 
     Serial.println("GSM Time: " + gsmTime);
 
-    doc1["info"]["vbat"]["V"] = vBat;
-    doc1["info"]["vbat"]["raw"] = adc1_get_raw(ADC_BAT);
+    doc1["info"]["power"]["Vbat"] = adc1_read_auto(ADC_BAT, 128)*2;;
+    doc1["info"]["power"]["Vsolar"] = adc1_read_auto(ADC_SOLAR, 128)*2;
+    doc1["info"]["power"]["%Bat"] = modem.getBattPercent();
     doc1["info"]["gsm"]["signal"] = modem.getSignalQuality();
     doc1["info"]["gsm"]["operator"] = modem.getOperator();
     doc1["info"]["gsm"]["ip"] = modem.getLocalIP();
+    // doc1["temp"]["modem"] = modem.getTemperature(); not available on this modem
 
     String GSMlocation(modem.getGsmLocation());
     if (GSMlocation != "")
@@ -508,6 +399,7 @@ void loop()
         doc1["info"]["gsm"]["location"] = GSMlocation;
     }
 
+    /* ditch the gps for now
     gps_info_t gpsInfo;
     if(bootCount %10 == 0)
     {
@@ -528,11 +420,14 @@ void loop()
         doc1["info"]["gps"]["alt"] = gpsInfo.alt;
         doc1["info"]["gps"]["sat"] = gpsInfo.vsat;      
     }
+    */
 
     String jsonString;
     serializeJson(doc1, jsonString);
 
+    ledOn();
     httpPostJson(msgBody, url_post_plain, &jsonString, true);
+    ledOff();
 
     http.stop();
     Serial.println(F("Server disconnected"));
