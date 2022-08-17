@@ -10,22 +10,18 @@ Battery test T-SIM7000 & Thingsboard
 
 #include "TinyGsmClient.h"
 #include <ArduinoHttpClient.h>
-//#include <AESLib.h>
 #include <xbase64.h>
 #include <ArduinoJson.h>
-//#include "BigInt.h"
 #include "modem.h"
-//#include "mbedtls/rsa.h"
 #include "ESP32Time.h"
 #include <iostream>
 #include "utils.h"
-#include <string>
+#include <ttgo-sim7000.h>
+#include <soc/adc_channel.h>
 
-#include <vector>
 
-#define ADC_BAT ADC1_CHANNEL_7
-#define ADC_SOLAR ADC1_CHANNEL_3
-#define ADC_ATTN ADC_ATTEN_DB_11	
+#define ADC_BAT ADC1_GPIO35_CHANNEL
+#define ADC_SOLAR ADC1_GPIO36_CHANNEL
 
 #define PIN_LED_NUM 12
 #define GPIO_PIN_LED (gpio_num_t)PIN_LED_NUM
@@ -40,7 +36,7 @@ extern "C" {
 #define Y2K1 1000000000
 #define uS_TO_S_FACTOR 1000000 /* Conversion factor for micro seconds to seconds */
 #define us_in_s 1000000
-#define TIME_TO_SLEEP 300       /* ESP32 should sleep more seconds  (note SIM7000 needs ~20sec to turn off if sleep is activated) */
+#define TIME_TO_SLEEP 60       /* ESP32 should sleep more seconds  (note SIM7000 needs ~20sec to turn off if sleep is activated) */
 RTC_DATA_ATTR int bootCount = 0;
 
 HardwareSerial serialGsm(1);
@@ -116,9 +112,6 @@ HttpClient http(client, server, port);
 // create RTC instance:
 ESP32Time rtc(0);
 
-void shutdown();
-void wait_till_ready();
-void modem_off();
 
 void print_wakeup_reason()
 {
@@ -308,9 +301,9 @@ void flash(int n)
     for(auto i=0; i<n; i++)
     {
         ledOn();
-        delay(200);
+        delay(100);
         ledOff();
-        delay(200);
+        delay(100);
     }
 }
 
@@ -319,21 +312,22 @@ void setup()
 {
     pinMode(PIN_LED_NUM, OUTPUT);
 
-    setCpuFrequencyMhz(40);
+    setCpuFrequencyMhz(40);    
+    Serial.begin(SERIAL_DEBUG_BAUD);
 }
 
 void loop()
 {
     // Set console baud rate
-    Serial.begin(SERIAL_DEBUG_BAUD);
-    delay(10);
+    DynamicJsonDocument doc1(2048);
 
-    Serial.println(F("Started"));
+    doc1["info"]["power"]["Vbat"] = adc1_read_auto(ADC_BAT, 128)*2;
+    doc1["info"]["power"]["Vsolar"] = adc1_read_auto(ADC_SOLAR, 128)*2;
+
 
     auto start = rtc.getEpoch();
-    
-    delay(100);
-    flash(1);
+
+    flash(2);
     
     //Increment boot number and print it every reboot
     ++bootCount;
@@ -342,24 +336,17 @@ void loop()
     //Print the wakeup reason for ESP32
     print_wakeup_reason();
 
-
-    Serial.println("Setup ESP32 to sleep for every " + String(TIME_TO_SLEEP) +
-                    " Seconds");
-
     modemio.on();
-    modem.enableGPS();
-    modem.getBattVoltage();
-
+    // modem.enableGPS();
+    // modem.getBattVoltage();
 
     // Set GSM module baud rate and UART pins
     SerialAT.begin(115200, SERIAL_8N1, MODEM_TX, MODEM_RX);
 
-
     String modemInfo = modemio.info();
     Serial.print(F("Modem: "));
     Serial.println(modemInfo);
-
-    
+   
     if (!modem.isGprsConnected())   
     {
         Serial.println("modem disconected. Reconnecting...");
@@ -378,15 +365,12 @@ void loop()
     }    
     ledOff();
 
-    DynamicJsonDocument doc1(2048);
 
     doc1["time"]["epoch"] = rtc.getEpoch();
     doc1["time"]["local"] = rtc.getDateTime(true);
 
     Serial.println("GSM Time: " + gsmTime);
 
-    doc1["info"]["power"]["Vbat"] = adc1_read_auto(ADC_BAT, 128)*2;;
-    doc1["info"]["power"]["Vsolar"] = adc1_read_auto(ADC_SOLAR, 128)*2;
     doc1["info"]["power"]["%Bat"] = modem.getBattPercent();
     doc1["info"]["gsm"]["signal"] = modem.getSignalQuality();
     doc1["info"]["gsm"]["operator"] = modem.getOperator();
@@ -399,28 +383,16 @@ void loop()
         doc1["info"]["gsm"]["location"] = GSMlocation;
     }
 
-    /* ditch the gps for now
+    /* ditch the gps for now */
     gps_info_t gpsInfo;
-    if(bootCount %10 == 0)
-    {
-        getGpsInfo(&modem, &gpsInfo, 600*us_in_s);
-    }
-    else
-    {
-        getGpsInfo(&modem, &gpsInfo, 60*us_in_s);
-    }
+    getGpsInfo(&modem, &gpsInfo, 1*us_in_s);
 
-    if(gpsInfo.vsat != 0)
-    {   ledOn();
-        #ifdef VERBOSE
-        Serial.println("GPS ON");
-        #endif //VERBOSE
-        doc1["info"]["gps"]["lat"] = gpsInfo.lat;
-        doc1["info"]["gps"]["lon"] = gpsInfo.lon;
-        doc1["info"]["gps"]["alt"] = gpsInfo.alt;
-        doc1["info"]["gps"]["sat"] = gpsInfo.vsat;      
-    }
-    */
+    doc1["info"]["gps"]["lat"] = gpsInfo.lat;
+    doc1["info"]["gps"]["lon"] = gpsInfo.lon;
+    doc1["info"]["gps"]["alt"] = gpsInfo.alt;
+    doc1["info"]["gps"]["visible_sat"] = gpsInfo.vsat;      
+    doc1["info"]["gps"]["used_sat"] = gpsInfo.usat;      
+    
 
     String jsonString;
     serializeJson(doc1, jsonString);
@@ -432,10 +404,11 @@ void loop()
     http.stop();
     Serial.println(F("Server disconnected"));
     Serial.println("Posted in: " + String(rtc.getEpoch() - start) + "s");
-
-    delay(100); // required - else will shutdown too early and miss last value
-
-    shutdown();
-    esp_light_sleep_start();
+    Serial.flush(); // wait for tx to complete
+    
+    // delay instead of sleep
+    delay(60000);
+    // shutdown();
+    // esp_light_sleep_start();
     // esp_restart();
 }

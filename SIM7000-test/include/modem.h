@@ -7,6 +7,8 @@ class ModemIO
 private:
     TinyGsm *modem;
     gpio_num_t rst, pwkey, dtr;
+    bool _on;
+
 public:
     ModemIO(bool debug=false);
     ModemIO();
@@ -19,9 +21,16 @@ public:
     void wake();
     void shutdown();
     String info();
+    bool isOn();
 
     ~ModemIO();
 };
+
+bool ModemIO::isOn()
+{
+    return this->_on;
+}
+
 
 ModemIO::ModemIO(TinyGsm *modem, gpio_num_t rst, gpio_num_t pwkey, gpio_num_t dtr)
 {
@@ -48,7 +57,7 @@ void ModemIO::reset()
     delay(260); //Treset 252ms
     gpio_set_level(this->rst, 0);
     delay(4000); //Modem takes longer to get ready and reply after this kind of reset vs power on
-
+    this->_on = true;
     //modem.factoryDefault();
     //modem.restart(); //this results in +CGREG: 0,0
 }
@@ -57,16 +66,20 @@ void ModemIO::reset()
 void ModemIO::on()
 {
     // Set-up modem  power pin
-    gpio_set_level(this->pwkey, 1);
-    delay(10);
-    gpio_set_level(this->pwkey, 0);
-    delay(1010); //Ton 1sec
-    gpio_set_level(this->pwkey, 1);
+    if(!this->_on)
+    {
+        gpio_set_level(this->pwkey, 1);
+        delay(10);
+        gpio_set_level(this->pwkey, 0);
+        delay(1010); //Ton 1sec
+        gpio_set_level(this->pwkey, 1);
 
-    //wait_till_ready();
-    Serial.println("Waiting till modem ready...");
-    // delay(4510); //Ton uart 4.5sec but seems to need ~7sec after hard (button) reset
-                //On soft-reset serial replies immediately.
+        //wait_till_ready();
+        Serial.println("Waiting till modem ready...");
+        // delay(4510); //Ton uart 4.5sec but seems to need ~7sec after hard (button) reset
+                    //On soft-reset serial replies immediately.
+        this->_on = true;
+    }
 }
 
 
@@ -78,6 +91,7 @@ void ModemIO::off()
     //modem.radioOff();
     this->modem->sleepEnable(false); // required in case sleep was activated and will apply after reboot
     this->modem->poweroff();
+    this->_on = false;
 }
 
 
@@ -90,6 +104,7 @@ void ModemIO::sleep() // will have an effect after reboot and will replace norma
     this->modem->eDRX_mode14(); // https://github.com/botletics/SIM7000-LTE-Shield/wiki/Current-Consumption#e-drx-mode
     this->modem->sleepEnable(); //will sleep (1.7mA), needs DTR or PWRKEY to wake
     gpio_set_level(this->dtr, 1);
+    this->_on = false;
 }
 
 
@@ -100,6 +115,7 @@ void ModemIO::wake()
     gpio_set_level(this->dtr, 0);
     delay(50);
     //wait_till_ready();
+    this->_on = true;
 }
 
 
