@@ -18,7 +18,10 @@ Battery test T-SIM7000 & Thingsboard
 #include "utils.h"
 #include <ttgo-sim7000.h>
 #include <soc/adc_channel.h>
+#include <esp_task_wdt.h>
 
+
+#define WDT_TIMEOUT 30 // seconds
 
 #define ADC_BAT ADC1_GPIO35_CHANNEL
 #define ADC_SOLAR ADC1_GPIO36_CHANNEL
@@ -74,7 +77,7 @@ const char pass[] = "";
 
 // define preffered connection mode
 // 2 Auto // 13 GSM only // 38 LTE only
-#define CONNECTION_MODE 13  // Auto
+#define CONNECTION_MODE 2  // Auto
 
 #ifdef DUMP_AT_COMMANDS
 #include "StreamDebugger.h"
@@ -318,6 +321,9 @@ void setup()
 
 void loop()
 {
+    esp_task_wdt_init(WDT_TIMEOUT, true); //enable panic so ESP32 restarts
+    esp_task_wdt_add(NULL); //add current thread to WDT watch
+
     // Set console baud rate
     DynamicJsonDocument doc1(2048);
 
@@ -337,11 +343,9 @@ void loop()
     print_wakeup_reason();
 
     modemio.on();
-    // modem.enableGPS();
-    // modem.getBattVoltage();
-
     // Set GSM module baud rate and UART pins
-    SerialAT.begin(115200, SERIAL_8N1, MODEM_TX, MODEM_RX);
+    SerialAT.begin(115200, SERIAL_8N1, MODEM_TX, MODEM_RX); 
+    
 
     String modemInfo = modemio.info();
     Serial.print(F("Modem: "));
@@ -352,6 +356,14 @@ void loop()
         Serial.println("modem disconected. Reconnecting...");
         connectModem();
     }
+    
+    esp_task_wdt_reset(); // reset watchdog
+    if(modem.enableGPS())
+    {
+        Serial.println("GPS Enabled!");
+    }
+
+    esp_task_wdt_reset(); // reset watchdog
 
     String *msgBody = new String();
 
@@ -366,6 +378,7 @@ void loop()
     ledOff();
 
 
+    esp_task_wdt_reset(); // reset watchdog
     doc1["time"]["epoch"] = rtc.getEpoch();
     doc1["time"]["local"] = rtc.getDateTime(true);
 
@@ -398,6 +411,7 @@ void loop()
     serializeJson(doc1, jsonString);
 
     ledOn();
+    esp_task_wdt_reset(); // reset watchdog
     httpPostJson(msgBody, url_post_plain, &jsonString, true);
     ledOff();
 
@@ -407,6 +421,10 @@ void loop()
     Serial.flush(); // wait for tx to complete
     
     // delay instead of sleep
+
+
+    esp_task_wdt_reset(); // reset watchdog
+    esp_task_wdt_init(70, NULL); // reconfigure wdt for upcoming delay
     delay(60000);
     // shutdown();
     // esp_light_sleep_start();

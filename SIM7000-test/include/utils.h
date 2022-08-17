@@ -146,6 +146,7 @@ bool getGpsInfo(TinyGsm *modem, gps_info_t *gpsInfo, uint32_t usec)
     do{
         gettimeofday(&now, NULL);
         modem->getGPS(&lat, &lon, &spd, &alt, &vsat, &usat);
+        delay(100);
         elapsed = (now.tv_sec - start.tv_sec)*1000000 + (now.tv_usec - start.tv_usec) ;
     }while ((lat == 0 || lon == 0 || alt == 0) && elapsed < usec);
 
