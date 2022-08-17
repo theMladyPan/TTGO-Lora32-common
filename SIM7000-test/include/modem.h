@@ -55,7 +55,7 @@ void ModemIO::reset()
     #endif //DEBUG
     gpio_set_level(this->rst, 0);
     delay(260); //Treset 252ms
-    gpio_set_level(this->rst, 0);
+    gpio_set_level(this->rst, 1);
     delay(4000); //Modem takes longer to get ready and reply after this kind of reset vs power on
     this->_on = true;
     //modem.factoryDefault();
