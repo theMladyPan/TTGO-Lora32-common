@@ -68,6 +68,13 @@ const char pass[] = "";
 
 #define LED_PIN 12
 
+#define CO_PIN unused_pins.pin32
+#define NOx_PIN unused_pins.pin33
+#define VOC_PIN unused_pins.pin34
+
+#define ADC_CO ADC1_GPIO32_CHANNEL
+#define ADC_NOx ADC1_GPIO33_CHANNEL
+#define ADC_VOC ADC1_GPIO34_CHANNEL
 
 #define PIN_ADC_BAT 35
 #define PIN_ADC_SOLAR 36
@@ -112,6 +119,11 @@ HttpClient http(client, server, port);
 
 // create RTC instance:
 ESP32Time rtc(0);
+
+void enableHeater()
+{
+    ; // put here routines to enable heater
+}
 
 
 void print_wakeup_reason()
@@ -413,7 +425,16 @@ void loop()
     doc1["info"]["gps"]["alt"] = gpsInfo.alt;    
     doc1["info"]["gps"]["visible_sat"] = gpsInfo.vsat;      
     doc1["info"]["gps"]["used_sat"] = gpsInfo.usat;      
-    
+
+    // gather data from sensor
+    float Vco, Vnox, Vvoc;
+    Vco = adc1_read_auto(ADC_CO, 128);
+    Vnox = adc1_read_auto(ADC_NOx, 128);
+    Vvoc = adc1_read_auto(ADC_VOC, 128);
+
+    doc1["measurement"]["gas"]["CO"] = Vco;
+    doc1["measurement"]["gas"]["NOx"] = Vnox;
+    doc1["measurement"]["gas"]["VOC"] = Vvoc;
 
     String jsonString;
     serializeJson(doc1, jsonString);
@@ -428,9 +449,6 @@ void loop()
     Serial.println("Posted in: " + String(rtc.getEpoch() - start) + "s");
     Serial.flush(); // wait for tx to complete
     
-    // delay instead of sleep
-
-
     esp_task_wdt_reset(); // reset watchdog
     esp_task_wdt_init(70, NULL); // reconfigure wdt for upcoming delay
     //delay(60000);
@@ -438,3 +456,17 @@ void loop()
     // esp_light_sleep_start();
     // esp_restart();
 }
+
+/*
+curl --location --request POST 'https://data.mongodb-api.com/app/data-ylgrg/endpoint/data/v1/action/findOne' \
+--header 'Content-Type: application/json' \
+--header 'Access-Control-Request-Headers: *' \
+--header 'api-key: hcmcMYy4lqeo9XsWGg0BL8cvWdIEdZVUYsjI06hA5e8Rk6Z6qE6KKxVNxSw15vno' \
+--data-raw '{
+    "collection":"66666",
+    "database":"sim_test",
+    "dataSource":"xerxes",
+    "projection": {"_id": 1}
+}'
+
+*/
