@@ -68,8 +68,6 @@ const char pass[] = "";
 
 #define LED_PIN 12
 
-#define UNUSED_PINS
-
 
 #define PIN_ADC_BAT 35
 #define PIN_ADC_SOLAR 36
@@ -327,6 +325,7 @@ void loop()
     // Set console baud rate
     DynamicJsonDocument doc1(2048);
 
+    // log the voltages
     doc1["info"]["power"]["Vbat"] = adc1_read_auto(ADC_BAT, 128)*2;
     doc1["info"]["power"]["Vsolar"] = adc1_read_auto(ADC_SOLAR, 128)*2;
 
@@ -384,7 +383,6 @@ void loop()
 
     Serial.println("GSM Time: " + gsmTime);
 
-    doc1["info"]["power"]["%Bat"] = modem.getBattPercent();
     doc1["info"]["gsm"]["signal"] = modem.getSignalQuality();
     doc1["info"]["gsm"]["operator"] = modem.getOperator();
     doc1["info"]["gsm"]["ip"] = modem.getLocalIP();
@@ -396,13 +394,23 @@ void loop()
         doc1["info"]["gsm"]["location"] = GSMlocation;
     }
 
-    /* ditch the gps for now */
-    gps_info_t gpsInfo;
-    getGpsInfo(&modem, &gpsInfo, 1*us_in_s);
+    uint8_t coef = 0;
+    if(bootCount%10 == 0)
+    {
+        coef = 10;
+    }else{
+        coef = 1;
+    }
 
+    gps_info_t gpsInfo; 
+    Serial.println("Gathering GPS cordinates");
+    esp_task_wdt_init(30 * coef + 5, NULL); // reconfigure wdt for upcoming delay
+    
+    getGpsInfo(&modem, &gpsInfo, coef*30*us_in_s);
+    esp_task_wdt_init(WDT_TIMEOUT, NULL); // back to normal wdt timeout
     doc1["info"]["gps"]["lat"] = gpsInfo.lat;
     doc1["info"]["gps"]["lon"] = gpsInfo.lon;
-    doc1["info"]["gps"]["alt"] = gpsInfo.alt;
+    doc1["info"]["gps"]["alt"] = gpsInfo.alt;    
     doc1["info"]["gps"]["visible_sat"] = gpsInfo.vsat;      
     doc1["info"]["gps"]["used_sat"] = gpsInfo.usat;      
     
@@ -425,8 +433,8 @@ void loop()
 
     esp_task_wdt_reset(); // reset watchdog
     esp_task_wdt_init(70, NULL); // reconfigure wdt for upcoming delay
-    delay(60000);
-    // shutdown();
+    //delay(60000);
+    shutdown();
     // esp_light_sleep_start();
     // esp_restart();
 }
