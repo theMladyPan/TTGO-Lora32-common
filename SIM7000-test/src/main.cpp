@@ -3,7 +3,6 @@ Battery test T-SIM7000 & Thingsboard
 */
 
 #define TINY_GSM_MODEM_SIM7000
-#define VERBOSE 1
 
 #define TINY_GSM_RX_BUFFER 1024 // Set RX buffer to 1Kb
 #undef DUMP_AT_COMMANDS
@@ -19,9 +18,18 @@ Battery test T-SIM7000 & Thingsboard
 #include <ttgo-sim7000.h>
 #include <soc/adc_channel.h>
 #include <esp_task_wdt.h>
+#include "mics.h"
 
+// use OLED 128*64
+#include "Wire.h"
+#include "SSD1306.h" 
+#define OLED_SDA 21
+#define OLED_SCL 22
+SSD1306 display(0x3c, OLED_SDA, OLED_SCL);
 
+#define WAIT_FOR_GPS_S 1
 #define WDT_TIMEOUT 30 // seconds
+#define WAIT_FOR_HEATER_MS 60*1000 // miliseconds
 
 #define ADC_BAT ADC1_GPIO35_CHANNEL
 #define ADC_SOLAR ADC1_GPIO36_CHANNEL
@@ -30,16 +38,10 @@ Battery test T-SIM7000 & Thingsboard
 #define GPIO_PIN_LED (gpio_num_t)PIN_LED_NUM
 
 
-extern "C" {
-#include "bootloader_random.h"
-}
-
-//AESLib aesLib;
-
 #define Y2K1 1000000000
 #define uS_TO_S_FACTOR 1000000 /* Conversion factor for micro seconds to seconds */
-#define us_in_s 1000000
-#define TIME_TO_SLEEP 60       /* ESP32 should sleep more seconds  (note SIM7000 needs ~20sec to turn off if sleep is activated) */
+#define US_IN_S 1000000
+#define TIME_TO_SLEEP 30       /* ESP32 should sleep more seconds  (note SIM7000 needs ~20sec to turn off if sleep is activated) */
 RTC_DATA_ATTR int bootCount = 0;
 
 HardwareSerial serialGsm(1);
@@ -63,9 +65,6 @@ const char pass[] = "";
 #define MODEM_TX 26
 #define MODEM_RX 27
 
-#define I2C_SDA 21
-#define I2C_SCL 22
-
 #define LED_PIN 12
 
 #define CO_PIN unused_pins.pin32
@@ -78,7 +77,7 @@ const char pass[] = "";
 
 #define PIN_ADC_BAT 35
 #define PIN_ADC_SOLAR 36
-#define ADC_BATTERY_LEVEL_SAMPLES 100
+#define ADC_SAMPLES 128
 
 // define preffered connection mode
 // 2 Auto // 13 GSM only // 38 LTE only
@@ -120,11 +119,27 @@ HttpClient http(client, server, port);
 // create RTC instance:
 ESP32Time rtc(0);
 
-void enableHeater()
+void displayPrint(String text, int x=0, int y=0, bool clear=true)
 {
-    ; // put here routines to enable heater
+    if(clear)
+    {
+        display.setColor(BLACK);
+        display.fillRect(x, y, 128, 16);
+        display.setColor(WHITE);
+    }
+
+    display.setTextAlignment(TEXT_ALIGN_LEFT);
+    display.setFont(ArialMT_Plain_10);
+    display.drawStringMaxWidth(x, y, 128, text);
+    display.display();
 }
 
+
+void S(String text)
+{
+    displayPrint(text, 0, 54, true);
+    delay(500);
+}
 
 void print_wakeup_reason()
 {
@@ -159,9 +174,11 @@ void print_wakeup_reason()
 void shutdown()
 {
     // modemio.sleep();
-    modemio.off();
+    // modemio.off();
 
     Serial.println("Going to sleep now");
+    S("Sleeping...");
+    display.setBrightness(5);
     delay(10);
     Serial.flush();
     esp_deep_sleep(TIME_TO_SLEEP * uS_TO_S_FACTOR);
@@ -309,69 +326,80 @@ void ledOff()
 }
 
 
-void flash(int n)
-{
-    for(auto i=0; i<n; i++)
-    {
-        ledOn();
-        delay(100);
-        ledOff();
-        delay(100);
-    }
-}
-
-
 void setup()
 {
     pinMode(PIN_LED_NUM, OUTPUT);
 
     setCpuFrequencyMhz(40);    
     Serial.begin(SERIAL_DEBUG_BAUD);
+    // Set GSM module baud rate and UART pins
+    SerialAT.begin(115200, SERIAL_8N1, MODEM_TX, MODEM_RX); 
+
+    display.init();
+    display.displayOn();
+    ledOff();
 }
 
+
 void loop()
-{
+{   
     esp_task_wdt_init(WDT_TIMEOUT, true); //enable panic so ESP32 restarts
     esp_task_wdt_add(NULL); //add current thread to WDT watch
+
+    MicsSensor *airpol = new MicsSensor(ADC_CO, ADC_NOx, ADC_VOC, unused_pins.pin18);
+    airpol->init(WAIT_FOR_HEATER_MS, ADC_SAMPLES);
+
+    Serial.print("Started heater of sensor.");
+
+    modemio.on(); // starting modem, Ton~1s
+    
+    display.displayOn();
+    display.clear();
+    display.setBrightness(255);
+
+    S("Getting power ...");
 
     // Set console baud rate
     DynamicJsonDocument doc1(2048);
 
     // log the voltages
-    doc1["info"]["power"]["Vbat"] = adc1_read_auto(ADC_BAT, 128)*2;
-    doc1["info"]["power"]["Vsolar"] = adc1_read_auto(ADC_SOLAR, 128)*2;
+    float Vbat, Vsol;
+    Vbat = adc1_read_auto(ADC_BAT, ADC_SAMPLES)*2;
+    Vsol = adc1_read_auto(ADC_SOLAR, ADC_SAMPLES)*2;
+    doc1["info"]["power"]["Vbat"] = Vbat;
+    doc1["info"]["power"]["Vsolar"] = Vsol;
+    displayPrint(String("Vbat: ") + String(Vbat), 0, 0);
+    displayPrint(String("Vsol: ") + String(Vsol), 0, 10);
+    
 
+    int64_t start = esp_timer_get_time();
 
-    auto start = rtc.getEpoch();
-
-    flash(2);
     
     //Increment boot number and print it every reboot
     ++bootCount;
     Serial.println("Boot number: " + String(bootCount));
+    S("Boot: "+String(bootCount));
 
     //Print the wakeup reason for ESP32
     print_wakeup_reason();
 
-    modemio.on();
-    // Set GSM module baud rate and UART pins
-    SerialAT.begin(115200, SERIAL_8N1, MODEM_TX, MODEM_RX); 
     
-
     String modemInfo = modemio.info();
     Serial.print(F("Modem: "));
     Serial.println(modemInfo);
    
+    esp_task_wdt_reset(); // reset watchdog
     if (!modem.isGprsConnected())   
     {
-        Serial.println("modem disconected. Reconnecting...");
+        Serial.println("Modem disconected. Reconnecting...");
+        S("Connecting to GPRS...");
         connectModem();
     }
-    
-    esp_task_wdt_reset(); // reset watchdog
+    S("Enabling GPS...");
     if(modem.enableGPS())
     {
         Serial.println("GPS Enabled!");
+        S("GPS Enabled!");
     }
 
     esp_task_wdt_reset(); // reset watchdog
@@ -394,6 +422,7 @@ void loop()
     doc1["time"]["local"] = rtc.getDateTime(true);
 
     Serial.println("GSM Time: " + gsmTime);
+    S(gsmTime);
 
     doc1["info"]["gsm"]["signal"] = modem.getSignalQuality();
     doc1["info"]["gsm"]["operator"] = modem.getOperator();
@@ -405,53 +434,77 @@ void loop()
     {
         doc1["info"]["gsm"]["location"] = GSMlocation;
     }
+        
 
-    uint8_t coef = 0;
-    if(bootCount%10 == 0)
+    // gather data from sensor
+    S("Waiting for sensor.");
+    Serial.print("Waiting for sensor ");
+    int i=0;
+    while(!airpol->ready())
     {
-        coef = 10;
-    }else{
-        coef = 1;
+        Serial.print(".");
+        if(i%4 == 0)S("Waiting for sensor   |");
+        if(i%4 == 1)S("Waiting for sensor   /");
+        if(i%4 == 2)S("Waiting for sensor   -");
+        if(i++%4 == 3)S("Waiting for sensor   \\");
+        esp_task_wdt_reset(); // reset watchdog
     }
+    S("Reading polutants.");
+    float Vco, Vnox, Vvoc;
+    
+    Vco = airpol->getCOVal();
+    doc1["measurement"]["gas"]["CO"] = Vco;
+    displayPrint("CO : " + String(Vco) , 0, 20);      
+    
+    Vnox = airpol->getNOxVal();
+    doc1["measurement"]["gas"]["NOx"] = Vnox;
+    displayPrint("NOX: " + String(Vnox), 0, 30);      
+    
+    Vvoc = airpol->getVOCVal();
+    doc1["measurement"]["gas"]["VOC"] = Vvoc;
+    displayPrint("VOC: " + String(Vvoc), 0, 40);
+
+    airpol->idle();
 
     gps_info_t gpsInfo; 
     Serial.println("Gathering GPS cordinates");
-    esp_task_wdt_init(30 * coef + 5, NULL); // reconfigure wdt for upcoming delay
     
-    getGpsInfo(&modem, &gpsInfo, coef*30*us_in_s);
-    esp_task_wdt_init(WDT_TIMEOUT, NULL); // back to normal wdt timeout
+    S("Reading GPS coord. ...");
+    esp_task_wdt_init(WAIT_FOR_GPS_S + 1, true); // reconfigure wdt for upcoming delay
+    getGpsInfo(&modem, &gpsInfo, WAIT_FOR_GPS_S*US_IN_S);
+    esp_task_wdt_init(WDT_TIMEOUT, true); // back to normal wdt timeout
     doc1["info"]["gps"]["lat"] = gpsInfo.lat;
     doc1["info"]["gps"]["lon"] = gpsInfo.lon;
     doc1["info"]["gps"]["alt"] = gpsInfo.alt;    
     doc1["info"]["gps"]["visible_sat"] = gpsInfo.vsat;      
-    doc1["info"]["gps"]["used_sat"] = gpsInfo.usat;      
-
-    // gather data from sensor
-    float Vco, Vnox, Vvoc;
-    Vco = adc1_read_auto(ADC_CO, 128);
-    Vnox = adc1_read_auto(ADC_NOx, 128);
-    Vvoc = adc1_read_auto(ADC_VOC, 128);
-
-    doc1["measurement"]["gas"]["CO"] = Vco;
-    doc1["measurement"]["gas"]["NOx"] = Vnox;
-    doc1["measurement"]["gas"]["VOC"] = Vvoc;
+    doc1["info"]["gps"]["used_sat"] = gpsInfo.usat;   
+       
+    displayPrint("Lat: " + String(gpsInfo.lat), 64, 0);      
+    displayPrint("Lon: " + String(gpsInfo.lon), 64, 10);      
+    displayPrint("Alt: " + String(gpsInfo.alt), 64, 20);
+    displayPrint("USat: " + String(gpsInfo.usat), 64, 30);      
+    displayPrint("VSat: " + String(gpsInfo.vsat), 64, 40);
+    
 
     String jsonString;
     serializeJson(doc1, jsonString);
 
-    ledOn();
     esp_task_wdt_reset(); // reset watchdog
+    S("Posting data...");
     httpPostJson(msgBody, url_post_plain, &jsonString, true);
-    ledOff();
 
+    S("Data sent!");
     http.stop();
     Serial.println(F("Server disconnected"));
-    Serial.println("Posted in: " + String(rtc.getEpoch() - start) + "s");
+    int64_t elapsed = (int64_t)(esp_timer_get_time() - start)/1000;
+    cout << "Posted in: " << elapsed << "ms" << endl;
     Serial.flush(); // wait for tx to complete
     
     esp_task_wdt_reset(); // reset watchdog
-    esp_task_wdt_init(70, NULL); // reconfigure wdt for upcoming delay
-    //delay(60000);
+    // esp_task_wdt_init(70, true); // reconfigure wdt for upcoming delay
+    
+    //delay(TIME_TO_SLEEP*1000);
+    modemio.off();
     shutdown();
     // esp_light_sleep_start();
     // esp_restart();

@@ -1,3 +1,5 @@
+#ifndef UTILS_H
+#define UTILS_H
 
 #include "ESP32Time.h"
 #include "ArduinoJson.h"
@@ -160,3 +162,6 @@ bool getGpsInfo(TinyGsm *modem, gps_info_t *gpsInfo, uint32_t usec)
 
     return (lat!=0 && lon!=0 && alt != 0);
 }
+
+
+#endif // UTILS_H
